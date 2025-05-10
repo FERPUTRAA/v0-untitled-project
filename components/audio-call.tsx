@@ -1,247 +1,292 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import { PhoneOff, Mic, MicOff, User } from "lucide-react"
-import { AudioCallConnection } from "@/lib/audio-call"
 import { useSocketContext } from "@/context/socket-context"
+import { Button } from "@/components/ui/button"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Card, CardContent } from "@/components/ui/card"
+import { Mic, MicOff, PhoneOff } from "lucide-react"
+import { formatDuration } from "@/lib/utils"
 
-interface AudioCallProps {
-  userId: string
-  contactId: string
-  contactName: string
-  contactAvatar?: string
-  isIncoming: boolean
-  offer?: RTCSessionDescriptionInit
+type User = {
+  id: string
+  fullName: string
+  avatarUrl?: string
+}
+
+type AudioCallProps = {
+  callId: string
+  currentUser: User
+  otherUser: User
   onEndCall: () => void
+  isIncoming?: boolean
+  autoAnswer?: boolean
 }
 
 export function AudioCall({
-  userId,
-  contactId,
-  contactName,
-  contactAvatar,
-  isIncoming,
-  offer,
+  callId,
+  currentUser,
+  otherUser,
   onEndCall,
+  isIncoming = false,
+  autoAnswer = false,
 }: AudioCallProps) {
-  const { socket, isConnected } = useSocketContext()
-  const [isMuted, setIsMuted] = useState(false)
-  const [isWebRtcConnected, setIsWebRtcConnected] = useState(false)
   const [isConnecting, setIsConnecting] = useState(true)
-  const [callDuration, setCallDuration] = useState(0)
-  const [connectionState, setConnectionState] = useState<string>("new")
-  const audioRef = useRef<HTMLAudioElement>(null)
-  const webrtcRef = useRef<AudioCallConnection | null>(null)
+  const [isConnected, setIsConnected] = useState(false)
+  const [isMuted, setIsMuted] = useState(false)
+  const [duration, setDuration] = useState(0)
+  const { socket, sendMessage } = useSocketContext()
+
+  const localAudioRef = useRef<HTMLAudioElement>(null)
+  const remoteAudioRef = useRef<HTMLAudioElement>(null)
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
+  const localStreamRef = useRef<MediaStream | null>(null)
   const timerRef = useRef<NodeJS.Timeout | null>(null)
 
+  // Setup WebRTC
   useEffect(() => {
-    // Inisialisasi WebRTC
-    const initializeWebRTC = async () => {
-      if (!socket || !isConnected) {
-        console.error("Socket not connected")
-        return
-      }
-
+    const setupCall = async () => {
       try {
-        // Buat koneksi WebRTC
-        webrtcRef.current = new AudioCallConnection(
-          // Handler untuk ICE candidate
-          (candidate) => {
-            socket.emit("call:ice-candidate", {
-              targetId: contactId,
-              candidate,
-            })
-          },
-          // Handler untuk track
-          (stream) => {
-            if (audioRef.current) {
-              audioRef.current.srcObject = stream
-              audioRef.current.play().catch((e) => console.error("Error playing audio:", e))
-            }
-          },
-          // Handler untuk connection state change
-          (state) => {
-            setConnectionState(state)
-            if (state === "connected") {
-              setIsWebRtcConnected(true)
-              setIsConnecting(false)
-              // Mulai timer durasi panggilan
-              timerRef.current = setInterval(() => {
-                setCallDuration((prev) => prev + 1)
-              }, 1000)
-            } else if (state === "disconnected" || state === "failed" || state === "closed") {
-              setIsWebRtcConnected(false)
-              if (timerRef.current) {
-                clearInterval(timerRef.current)
-              }
-            }
-          },
-        )
+        // Create peer connection
+        const peerConnection = new RTCPeerConnection({
+          iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }],
+        })
 
-        // Tambahkan stream audio lokal
-        await webrtcRef.current.addLocalAudioStream()
+        peerConnectionRef.current = peerConnection
 
-        // Jika ini adalah panggilan masuk, terima offer
-        if (isIncoming && offer) {
-          await webrtcRef.current.receiveOffer(offer)
-          const answer = await webrtcRef.current.createAnswer()
-          socket.emit("call:answer", {
-            callerId: contactId,
-            answer,
-          })
+        // Get local stream
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+        localStreamRef.current = stream
+
+        // Add tracks to peer connection
+        stream.getAudioTracks().forEach((track) => {
+          if (peerConnectionRef.current) {
+            peerConnectionRef.current.addTrack(track, stream)
+          }
+        })
+
+        // Set local audio
+        if (localAudioRef.current) {
+          localAudioRef.current.srcObject = stream
         }
-        // Jika ini adalah panggilan keluar, buat offer
-        else {
-          const offer = await webrtcRef.current.createOffer()
-          socket.emit("call:request", {
-            receiverId: contactId,
+
+        // Handle ICE candidates
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate) {
+            sendMessage("call:ice-candidate", {
+              callId,
+              candidate: event.candidate,
+            })
+          }
+        }
+
+        // Handle remote track
+        peerConnection.ontrack = (event) => {
+          if (remoteAudioRef.current) {
+            remoteAudioRef.current.srcObject = event.streams[0]
+          }
+        }
+
+        // Handle connection state change
+        peerConnection.onconnectionstatechange = () => {
+          if (peerConnection.connectionState === "connected") {
+            setIsConnecting(false)
+            setIsConnected(true)
+
+            // Start timer
+            timerRef.current = setInterval(() => {
+              setDuration((prev) => prev + 1)
+            }, 1000)
+          }
+        }
+
+        // Create and send offer if not incoming call
+        if (!isIncoming) {
+          const offer = await peerConnection.createOffer()
+          await peerConnection.setLocalDescription(offer)
+
+          sendMessage("call:offer", {
+            callId,
             offer,
           })
         }
+
+        // Auto answer if specified
+        if (isIncoming && autoAnswer) {
+          handleAnswer()
+        }
       } catch (error) {
-        console.error("Error initializing WebRTC:", error)
-        setIsConnecting(false)
+        console.error("Error setting up call:", error)
         onEndCall()
       }
     }
 
-    initializeWebRTC()
-
-    // Set up event listeners
-    const handleCallAnswered = async (data: any) => {
-      if (data.callerId === userId && webrtcRef.current) {
-        try {
-          await webrtcRef.current.receiveAnswer(data.answer)
-        } catch (error) {
-          console.error("Error receiving answer:", error)
-        }
-      }
-    }
-
-    const handleIceCandidate = async (data: any) => {
-      if (data.senderId === contactId && webrtcRef.current) {
-        try {
-          await webrtcRef.current.addIceCandidate(data.candidate)
-        } catch (error) {
-          console.error("Error adding ICE candidate:", error)
-        }
-      }
-    }
-
-    const handleCallEnded = (data: any) => {
-      if (data.senderId === contactId) {
-        endCall()
-      }
-    }
-
     if (socket) {
-      socket.on("call:answered", handleCallAnswered)
-      socket.on("call:ice-candidate", handleIceCandidate)
-      socket.on("call:ended", handleCallEnded)
+      setupCall()
     }
 
     return () => {
-      // Clean up
-      if (socket) {
-        socket.off("call:answered", handleCallAnswered)
-        socket.off("call:ice-candidate", handleIceCandidate)
-        socket.off("call:ended", handleCallEnded)
-      }
-
+      // Cleanup
       if (timerRef.current) {
         clearInterval(timerRef.current)
       }
 
-      if (webrtcRef.current) {
-        webrtcRef.current.close()
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => track.stop())
+      }
+
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close()
       }
     }
-  }, [socket, isConnected, userId, contactId, isIncoming, offer, onEndCall])
+  }, [socket, callId, sendMessage, isIncoming, autoAnswer, onEndCall])
 
-  const toggleMute = () => {
-    if (webrtcRef.current) {
-      webrtcRef.current.setMuted(!isMuted)
-      setIsMuted(!isMuted)
+  // Listen for socket events
+  useEffect(() => {
+    if (!socket) return
+
+    // Handle incoming offer
+    const handleOffer = async (data: { userId: string; offer: RTCSessionDescriptionInit }) => {
+      if (data.userId === otherUser.id && peerConnectionRef.current) {
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.offer))
+
+        // Create answer
+        const answer = await peerConnectionRef.current.createAnswer()
+        await peerConnectionRef.current.setLocalDescription(answer)
+
+        sendMessage("call:answer-sdp", {
+          callId,
+          answer,
+        })
+      }
     }
+
+    // Handle answer
+    const handleAnswer = async (data: { userId: string; answer: RTCSessionDescriptionInit }) => {
+      if (data.userId === otherUser.id && peerConnectionRef.current) {
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.answer))
+      }
+    }
+
+    // Handle ICE candidate
+    const handleIceCandidate = (data: { userId: string; candidate: RTCIceCandidateInit }) => {
+      if (data.userId === otherUser.id && peerConnectionRef.current) {
+        peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate))
+      }
+    }
+
+    // Handle call end
+    const handleCallEnd = (data: { userId: string }) => {
+      if (data.userId === otherUser.id) {
+        onEndCall()
+      }
+    }
+
+    // Subscribe to events
+    socket.on("call:offer", handleOffer)
+    socket.on("call:answer-sdp", handleAnswer)
+    socket.on("call:ice-candidate", handleIceCandidate)
+    socket.on("call:end", handleCallEnd)
+
+    // Cleanup
+    return () => {
+      socket.off("call:offer", handleOffer)
+      socket.off("call:answer-sdp", handleAnswer)
+      socket.off("call:ice-candidate", handleIceCandidate)
+      socket.off("call:end", handleCallEnd)
+    }
+  }, [socket, callId, otherUser.id, sendMessage, onEndCall])
+
+  // Handle answer call
+  const handleAnswer = async () => {
+    setIsConnecting(true)
+
+    sendMessage("call:answer", {
+      callerId: otherUser.id,
+      callId,
+      accepted: true,
+    })
   }
 
-  const endCall = () => {
-    if (socket && isConnected) {
-      socket.emit("call:end", {
-        targetId: contactId,
-      })
-    }
-
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-    }
-
-    if (webrtcRef.current) {
-      webrtcRef.current.close()
-    }
+  // Handle reject call
+  const handleReject = () => {
+    sendMessage("call:answer", {
+      callerId: otherUser.id,
+      callId,
+      accepted: false,
+    })
 
     onEndCall()
   }
 
-  // Format durasi panggilan
-  const formatDuration = (seconds: number) => {
-    const hours = Math.floor(seconds / 3600)
-    const minutes = Math.floor((seconds % 3600) / 60)
-    const secs = seconds % 60
-    return [
-      hours > 0 ? hours.toString().padStart(2, "0") : null,
-      minutes.toString().padStart(2, "0"),
-      secs.toString().padStart(2, "0"),
-    ]
-      .filter(Boolean)
-      .join(":")
+  // Handle end call
+  const handleEndCall = () => {
+    sendMessage("call:end", {
+      callId,
+    })
+
+    onEndCall()
+  }
+
+  // Handle mute/unmute
+  const handleToggleMute = () => {
+    if (localStreamRef.current) {
+      const audioTracks = localStreamRef.current.getAudioTracks()
+
+      audioTracks.forEach((track) => {
+        track.enabled = !track.enabled
+      })
+
+      setIsMuted(!isMuted)
+    }
   }
 
   return (
     <Card className="w-full max-w-md mx-auto">
       <CardContent className="p-6 flex flex-col items-center">
-        {/* Audio element (hidden) */}
-        <audio ref={audioRef} autoPlay />
+        <audio ref={localAudioRef} autoPlay muted className="hidden" />
+        <audio ref={remoteAudioRef} autoPlay className="hidden" />
 
-        <div className="w-24 h-24 rounded-full bg-gray-200 flex items-center justify-center mb-4">
-          {contactAvatar ? (
-            <div className="text-4xl">{contactAvatar}</div>
-          ) : (
-            <User className="h-12 w-12 text-gray-500" />
-          )}
-        </div>
+        <Avatar className="h-24 w-24 mb-4">
+          <AvatarImage src={otherUser.avatarUrl || "/placeholder.svg"} alt={otherUser.fullName} />
+          <AvatarFallback className="text-2xl">{otherUser.fullName.charAt(0)}</AvatarFallback>
+        </Avatar>
 
-        <h2 className="text-xl font-bold mb-2">{contactName}</h2>
+        <h2 className="text-xl font-bold mb-1">{otherUser.fullName}</h2>
 
         {isConnecting ? (
-          <p className="text-gray-500 mb-4">Menghubungkan...</p>
-        ) : isWebRtcConnected ? (
-          <p className="text-gray-500 mb-4">{formatDuration(callDuration)}</p>
+          <p className="text-gray-500 mb-6">Connecting...</p>
+        ) : isConnected ? (
+          <p className="text-green-500 mb-6">{formatDuration(duration)}</p>
         ) : (
-          <p className="text-red-500 mb-4">Koneksi terputus</p>
+          <p className="text-gray-500 mb-6">Call ended</p>
         )}
 
-        {connectionState !== "connected" && connectionState !== "new" && (
-          <p className="text-sm text-gray-500 mb-4">Status: {connectionState}</p>
+        {isIncoming && !isConnected && !isConnecting ? (
+          <div className="flex space-x-4">
+            <Button onClick={handleReject} variant="destructive">
+              Reject
+            </Button>
+            <Button onClick={handleAnswer} variant="default">
+              Answer
+            </Button>
+          </div>
+        ) : (
+          <div className="flex space-x-4">
+            <Button
+              onClick={handleToggleMute}
+              variant="outline"
+              className="rounded-full h-12 w-12 p-0"
+              disabled={!isConnected}
+            >
+              {isMuted ? <MicOff className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
+            </Button>
+
+            <Button onClick={handleEndCall} variant="destructive" className="rounded-full h-12 w-12 p-0">
+              <PhoneOff className="h-6 w-6" />
+            </Button>
+          </div>
         )}
-
-        <div className="flex space-x-4 mt-4">
-          <Button
-            variant="outline"
-            size="icon"
-            className="h-12 w-12 rounded-full"
-            onClick={toggleMute}
-            disabled={!isWebRtcConnected}
-          >
-            {isMuted ? <MicOff className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
-          </Button>
-
-          <Button variant="destructive" size="icon" className="h-12 w-12 rounded-full" onClick={endCall}>
-            <PhoneOff className="h-6 w-6" />
-          </Button>
-        </div>
       </CardContent>
     </Card>
   )

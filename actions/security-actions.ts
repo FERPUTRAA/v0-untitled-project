@@ -1,87 +1,159 @@
 "use server"
 
-import { getCurrentUser } from "@/lib/auth"
-import {
-  setupUserSecurity as setupSecurity,
-  setupTwoFactor as setupTwoFactorModel,
-  getUserSecurity,
-  getUserPublicKey,
-  logUserSession,
-  getUserSessions,
-  removeUserSession as removeSession,
-} from "@/lib/models/security"
 import { revalidatePath } from "next/cache"
+import { updateUser } from "@/lib/models/user"
+import { getUser } from "./auth-actions"
+import { generateTOTP, verifyTOTP } from "@/lib/two-factor-auth"
+import { generateKeyPair } from "@/lib/encryption"
 
-// Fungsi untuk mengatur keamanan pengguna
-export async function setupUserSecurity(encryptionEnabled: boolean, publicKey?: string) {
-  const user = await getCurrentUser()
+export async function setupTwoFactor() {
+  const user = await getUser()
+
   if (!user) {
-    return { error: "Not authenticated" }
+    return { error: "Anda harus login untuk mengatur autentikasi dua faktor" }
   }
 
-  const security = await setupSecurity(user.id, encryptionEnabled, publicKey)
-  return { data: security }
+  try {
+    // Generate TOTP secret
+    const { secret, qrCodeUrl } = await generateTOTP(user.email)
+
+    // Save the secret to the user's profile (but don't enable 2FA yet until verified)
+    await updateUser(user.id, {
+      totpSecret: secret,
+      totpEnabled: false,
+    })
+
+    return { success: true, qrCodeUrl }
+  } catch (error) {
+    console.error("Setup two-factor error:", error)
+    return { error: "Terjadi kesalahan saat mengatur autentikasi dua faktor" }
+  }
 }
 
-// Fungsi untuk mengatur verifikasi dua faktor
-export async function setupTwoFactor(enabled: boolean, secret?: string) {
-  const user = await getCurrentUser()
+export async function verifyAndEnableTwoFactor(formData: FormData) {
+  const user = await getUser()
+
   if (!user) {
-    return { error: "Not authenticated" }
+    return { error: "Anda harus login untuk mengatur autentikasi dua faktor" }
   }
 
-  const security = await setupTwoFactorModel(user.id, enabled, secret)
-  return { data: security }
-}
+  const token = formData.get("token") as string
 
-// Fungsi untuk mendapatkan pengaturan keamanan pengguna
-export async function getUserSecuritySettings() {
-  const user = await getCurrentUser()
-  if (!user) {
-    return { error: "Not authenticated" }
+  if (!token) {
+    return { error: "Token diperlukan" }
   }
 
-  const security = await getUserSecurity(user.id)
-  return { data: security }
+  try {
+    if (!user.totpSecret) {
+      return { error: "Anda belum mengatur autentikasi dua faktor" }
+    }
+
+    const isValid = await verifyTOTP(user.totpSecret, token)
+
+    if (!isValid) {
+      return { error: "Token tidak valid" }
+    }
+
+    // Enable 2FA for the user
+    await updateUser(user.id, {
+      totpEnabled: true,
+    })
+
+    // Revalidate the security page
+    revalidatePath("/profile/security")
+
+    return { success: true }
+  } catch (error) {
+    console.error("Verify two-factor error:", error)
+    return { error: "Terjadi kesalahan saat memverifikasi token" }
+  }
 }
 
-// Fungsi untuk mendapatkan kunci publik pengguna
-export async function getUserPublicKeyAction(userId: string) {
-  const publicKey = await getUserPublicKey(userId)
-  return { publicKey }
-}
+export async function disableTwoFactor(formData: FormData) {
+  const user = await getUser()
 
-// Fungsi untuk mencatat sesi pengguna
-export async function logUserSessionAction(deviceInfo: string, ipAddress: string, location?: string) {
-  const user = await getCurrentUser()
   if (!user) {
-    return { error: "Not authenticated" }
+    return { error: "Anda harus login untuk menonaktifkan autentikasi dua faktor" }
   }
 
-  const session = await logUserSession(user.id, deviceInfo, ipAddress, location)
-  return { data: session }
-}
+  const token = formData.get("token") as string
 
-// Fungsi untuk mendapatkan sesi pengguna
-export async function getUserSessionsAction() {
-  const user = await getCurrentUser()
-  if (!user) {
-    return { error: "Not authenticated" }
+  if (!token) {
+    return { error: "Token diperlukan" }
   }
 
-  const sessions = await getUserSessions(user.id)
-  return { data: sessions }
+  try {
+    if (!user.totpSecret || !user.totpEnabled) {
+      return { error: "Autentikasi dua faktor belum diaktifkan" }
+    }
+
+    const isValid = await verifyTOTP(user.totpSecret, token)
+
+    if (!isValid) {
+      return { error: "Token tidak valid" }
+    }
+
+    // Disable 2FA for the user
+    await updateUser(user.id, {
+      totpEnabled: false,
+      totpSecret: null,
+    })
+
+    // Revalidate the security page
+    revalidatePath("/profile/security")
+
+    return { success: true }
+  } catch (error) {
+    console.error("Disable two-factor error:", error)
+    return { error: "Terjadi kesalahan saat menonaktifkan autentikasi dua faktor" }
+  }
 }
 
-// Fungsi untuk menghapus sesi pengguna
-export async function removeUserSession(sessionId: string) {
-  const user = await getCurrentUser()
+export async function setupEncryption() {
+  const user = await getUser()
+
   if (!user) {
-    return { error: "Not authenticated" }
+    return { error: "Anda harus login untuk mengatur enkripsi" }
   }
 
-  const success = await removeSession(sessionId)
-  revalidatePath("/profile/security")
+  try {
+    // Generate key pair
+    const { publicKey, privateKey } = await generateKeyPair()
 
-  return { success }
+    // Save the public key to the user's profile
+    await updateUser(user.id, {
+      publicKey,
+      encryptionEnabled: true,
+    })
+
+    // Return the private key to the client (to be stored securely)
+    return { success: true, privateKey }
+  } catch (error) {
+    console.error("Setup encryption error:", error)
+    return { error: "Terjadi kesalahan saat mengatur enkripsi" }
+  }
+}
+
+export async function disableEncryption() {
+  const user = await getUser()
+
+  if (!user) {
+    return { error: "Anda harus login untuk menonaktifkan enkripsi" }
+  }
+
+  try {
+    // Disable encryption for the user
+    await updateUser(user.id, {
+      encryptionEnabled: false,
+      publicKey: null,
+    })
+
+    // Revalidate the security page
+    revalidatePath("/profile/security")
+
+    return { success: true }
+  } catch (error) {
+    console.error("Disable encryption error:", error)
+    return { error: "Terjadi kesalahan saat menonaktifkan enkripsi" }
+  }
 }

@@ -1,236 +1,215 @@
 import { Server } from "socket.io"
-import type { NextRequest } from "next/server"
-import { redis } from "@/lib/redis"
 import { verifyJwt } from "@/lib/auth"
+import { Redis } from "@upstash/redis"
+import { createMessage } from "@/lib/models/message"
+import { updateLastOnline } from "@/lib/auth"
 
-// Simpan koneksi aktif
-const connectedUsers = new Map()
+// Inisialisasi Redis client
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL || "",
+  token: process.env.KV_REST_API_TOKEN || "",
+})
 
-// Simpan instance server Socket.io
+export async function GET(req: Request) {
+  // Ini adalah endpoint untuk WebSocket, bukan HTTP
+  return new Response("WebSocket server", { status: 200 })
+}
+
+// Simpan instance socket.io
 let io: any
 
-export async function GET(req: NextRequest) {
-  // Verifikasi token dari header Authorization
-  const authHeader = req.headers.get("authorization")
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return new Response("Unauthorized", { status: 401 })
-  }
-
-  const token = authHeader.split(" ")[1]
-  const payload = await verifyJwt(token)
-
-  if (!payload || !payload.userId) {
-    return new Response("Unauthorized", { status: 401 })
-  }
-
-  const userId = payload.userId as string
-
-  // Jika server belum diinisialisasi, buat server baru
+// Fungsi untuk mendapatkan atau membuat instance socket.io
+function getIO() {
   if (!io) {
-    // Buat server Socket.io
+    // @ts-ignore - socket.io types tidak kompatibel dengan Next.js
     io = new Server({
       cors: {
-        origin: "*",
+        origin: process.env.NEXT_PUBLIC_APP_URL || "*",
         methods: ["GET", "POST"],
+        credentials: true,
       },
-      path: "/api/socket",
     })
 
-    // Tangani koneksi baru
-    io.on("connection", (socket) => {
-      // Dapatkan userId dari auth data
-      const userId = socket.handshake.auth.userId
-      if (!userId) {
-        socket.disconnect()
-        return
+    // Middleware untuk autentikasi
+    io.use(async (socket: any, next: any) => {
+      try {
+        const token = socket.handshake.auth.token
+
+        if (!token) {
+          return next(new Error("Authentication error"))
+        }
+
+        const payload = await verifyJwt(token)
+
+        if (!payload || !payload.userId) {
+          return next(new Error("Authentication error"))
+        }
+
+        // Simpan userId di socket
+        socket.userId = payload.userId
+
+        next()
+      } catch (error) {
+        next(new Error("Authentication error"))
       }
+    })
+
+    // Event handlers
+    io.on("connection", async (socket: any) => {
+      const userId = socket.userId
 
       console.log(`User connected: ${userId}`)
 
-      // Simpan koneksi
-      connectedUsers.set(userId, socket.id)
+      // Update status online
+      await updateLastOnline(userId)
 
-      // Update status online di Redis
-      redis.hset(`user:${userId}`, { isOnline: true, lastOnline: new Date().toISOString() })
+      // Join room untuk user
+      socket.join(`user:${userId}`)
 
-      // Kirim daftar pengguna online
-      io.emit("users:online", Array.from(connectedUsers.keys()))
+      // Broadcast status online
+      socket.broadcast.emit("user:online", { userId })
 
-      // Handle pesan chat
-      socket.on("chat:message", async (data) => {
-        const { receiverId, message, messageId } = data
+      // Event untuk pesan chat
+      socket.on("chat:message", async (data: any) => {
+        try {
+          const { conversationId, receiverId, content, type = "text" } = data
 
-        // Simpan pesan di Redis
-        await redis.zadd(`messages:${userId}:${receiverId}`, {
-          score: Date.now(),
-          member: JSON.stringify({
-            id: messageId,
+          // Simpan pesan ke database
+          const message = await createMessage({
             senderId: userId,
             receiverId,
-            content: message,
-            createdAt: new Date().toISOString(),
-            read: false,
-          }),
+            conversationId,
+            content,
+            type,
+          })
+
+          // Kirim pesan ke pengirim dan penerima
+          io.to(`user:${userId}`).to(`user:${receiverId}`).emit("chat:message", message)
+
+          // Kirim konfirmasi ke pengirim
+          socket.emit("chat:message:sent", { messageId: message.id })
+        } catch (error) {
+          console.error("Chat message error:", error)
+          socket.emit("error", { message: "Failed to send message" })
+        }
+      })
+
+      // Event untuk tanda dibaca
+      socket.on("chat:read", async (data: any) => {
+        try {
+          const { conversationId, messageId } = data
+
+          // Broadcast tanda dibaca ke semua user di conversation
+          io.to(`conversation:${conversationId}`).emit("chat:read", {
+            userId,
+            messageId,
+            conversationId,
+          })
+        } catch (error) {
+          console.error("Chat read error:", error)
+        }
+      })
+
+      // Event untuk indikator mengetik
+      socket.on("chat:typing", (data: any) => {
+        const { conversationId, isTyping } = data
+
+        // Broadcast status mengetik ke conversation
+        socket.to(`conversation:${conversationId}`).emit("chat:typing", {
+          userId,
+          conversationId,
+          isTyping,
+        })
+      })
+
+      // Event untuk panggilan
+      socket.on("call:request", (data: any) => {
+        const { receiverId, callId } = data
+
+        // Kirim permintaan panggilan ke penerima
+        io.to(`user:${receiverId}`).emit("call:request", {
+          callerId: userId,
+          callId,
+        })
+      })
+
+      socket.on("call:answer", (data: any) => {
+        const { callerId, callId, accepted } = data
+
+        // Kirim jawaban ke pemanggil
+        io.to(`user:${callerId}`).emit("call:answer", {
+          receiverId: userId,
+          callId,
+          accepted,
         })
 
-        // Simpan juga di set penerima untuk riwayat dua arah
-        await redis.zadd(`messages:${receiverId}:${userId}`, {
-          score: Date.now(),
-          member: JSON.stringify({
-            id: messageId,
-            senderId: userId,
-            receiverId,
-            content: message,
-            createdAt: new Date().toISOString(),
-            read: false,
-          }),
+        // Jika diterima, buat room untuk panggilan
+        if (accepted) {
+          socket.join(`call:${callId}`)
+          io.sockets.sockets.get(callerId)?.join(`call:${callId}`)
+        }
+      })
+
+      socket.on("call:ice-candidate", (data: any) => {
+        const { callId, candidate } = data
+
+        // Broadcast ICE candidate ke semua peserta panggilan kecuali pengirim
+        socket.to(`call:${callId}`).emit("call:ice-candidate", {
+          userId,
+          candidate,
+        })
+      })
+
+      socket.on("call:offer", (data: any) => {
+        const { callId, offer } = data
+
+        // Broadcast offer ke semua peserta panggilan kecuali pengirim
+        socket.to(`call:${callId}`).emit("call:offer", {
+          userId,
+          offer,
+        })
+      })
+
+      socket.on("call:answer-sdp", (data: any) => {
+        const { callId, answer } = data
+
+        // Broadcast answer ke semua peserta panggilan kecuali pengirim
+        socket.to(`call:${callId}`).emit("call:answer-sdp", {
+          userId,
+          answer,
+        })
+      })
+
+      socket.on("call:end", (data: any) => {
+        const { callId } = data
+
+        // Broadcast end call ke semua peserta panggilan
+        io.to(`call:${callId}`).emit("call:end", {
+          userId,
         })
 
-        // Kirim pesan ke penerima jika online
-        const receiverSocketId = connectedUsers.get(receiverId)
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("chat:message", {
-            id: messageId,
-            senderId: userId,
-            content: message,
-            createdAt: new Date().toISOString(),
-          })
-        }
-
-        // Kirim konfirmasi pengiriman ke pengirim
-        socket.emit("chat:message:sent", { messageId })
+        // Keluarkan semua peserta dari room panggilan
+        io.in(`call:${callId}`).socketsLeave(`call:${callId}`)
       })
 
-      // Handle read receipt
-      socket.on("chat:read", async (data) => {
-        const { senderId, messageIds } = data
-
-        // Update status pesan di Redis
-        for (const messageId of messageIds) {
-          // Dapatkan pesan dari Redis
-          const messages = await redis.zrange(`messages:${senderId}:${userId}`, 0, -1)
-
-          for (let i = 0; i < messages.length; i++) {
-            const message = JSON.parse(messages[i])
-            if (message.id === messageId) {
-              message.read = true
-              await redis.zremrangebyrank(`messages:${senderId}:${userId}`, i, i)
-              await redis.zadd(`messages:${senderId}:${userId}`, {
-                score: new Date(message.createdAt).getTime(),
-                member: JSON.stringify(message),
-              })
-              break
-            }
-          }
-        }
-
-        // Kirim read receipt ke pengirim jika online
-        const senderSocketId = connectedUsers.get(senderId)
-        if (senderSocketId) {
-          io.to(senderSocketId).emit("chat:read", {
-            readerId: userId,
-            messageIds,
-          })
-        }
-      })
-
-      // Handle typing indicator
-      socket.on("chat:typing", (data) => {
-        const { receiverId, isTyping } = data
-
-        const receiverSocketId = connectedUsers.get(receiverId)
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("chat:typing", {
-            senderId: userId,
-            isTyping,
-          })
-        }
-      })
-
-      // Handle panggilan
-      socket.on("call:request", (data) => {
-        const { receiverId, offer } = data
-
-        const receiverSocketId = connectedUsers.get(receiverId)
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("call:incoming", {
-            callerId: userId,
-            offer,
-          })
-        } else {
-          // Penerima offline, kirim respons ke penelepon
-          socket.emit("call:rejected", {
-            receiverId,
-            reason: "offline",
-          })
-        }
-      })
-
-      socket.on("call:answer", (data) => {
-        const { callerId, answer } = data
-
-        const callerSocketId = connectedUsers.get(callerId)
-        if (callerSocketId) {
-          io.to(callerSocketId).emit("call:answered", {
-            receiverId: userId,
-            answer,
-          })
-        }
-      })
-
-      socket.on("call:reject", (data) => {
-        const { callerId, reason } = data
-
-        const callerSocketId = connectedUsers.get(callerId)
-        if (callerSocketId) {
-          io.to(callerSocketId).emit("call:rejected", {
-            receiverId: userId,
-            reason: reason || "rejected",
-          })
-        }
-      })
-
-      socket.on("call:ice-candidate", (data) => {
-        const { targetId, candidate } = data
-
-        const targetSocketId = connectedUsers.get(targetId)
-        if (targetSocketId) {
-          io.to(targetSocketId).emit("call:ice-candidate", {
-            senderId: userId,
-            candidate,
-          })
-        }
-      })
-
-      socket.on("call:end", (data) => {
-        const { targetId } = data
-
-        const targetSocketId = connectedUsers.get(targetId)
-        if (targetSocketId) {
-          io.to(targetSocketId).emit("call:ended", {
-            senderId: userId,
-          })
-        }
-      })
-
-      // Handle disconnect
-      socket.on("disconnect", () => {
+      // Event disconnect
+      socket.on("disconnect", async () => {
         console.log(`User disconnected: ${userId}`)
 
-        // Hapus koneksi
-        connectedUsers.delete(userId)
+        // Update status offline
+        await redis.del(`online:${userId}`)
 
-        // Update status offline di Redis
-        redis.hset(`user:${userId}`, { isOnline: false, lastOnline: new Date().toISOString() })
-
-        // Kirim daftar pengguna online yang diperbarui
-        io.emit("users:online", Array.from(connectedUsers.keys()))
+        // Broadcast status offline
+        socket.broadcast.emit("user:offline", { userId })
       })
     })
 
-    // Mulai server
-    await io.listen(3001)
+    // Start server
+    io.listen(3001)
   }
 
-  return new Response("WebSocket server is running", { status: 200 })
+  return io
 }
+
+// Panggil getIO untuk memastikan server dimulai
+getIO()

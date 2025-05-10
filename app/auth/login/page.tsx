@@ -154,19 +154,31 @@ export default function LoginPage() {
     }
   }
 
+  // Fungsi untuk login dengan Google
   const handleGoogleLogin = () => {
-    if (!googleConfig.clientId) {
-      setError("Google login tidak tersedia saat ini")
-      return
+    try {
+      setIsLoading(true)
+      setError("")
+
+      if (!googleConfig.clientId) {
+        setError("Google login tidak tersedia saat ini")
+        setIsLoading(false)
+        return
+      }
+
+      console.log("Starting Google login, redirecting to Google auth page")
+      const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${
+        googleConfig.clientId
+      }&redirect_uri=${encodeURIComponent(
+        googleConfig.redirectUri,
+      )}&response_type=code&scope=email%20profile&prompt=select_account&access_type=offline`
+
+      window.location.href = googleAuthUrl
+    } catch (err) {
+      console.error("Error initiating Google login:", err)
+      setError("Terjadi kesalahan saat memulai login Google")
+      setIsLoading(false)
     }
-
-    const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${
-      googleConfig.clientId
-    }&redirect_uri=${encodeURIComponent(
-      googleConfig.redirectUri,
-    )}&response_type=code&scope=email%20profile&prompt=select_account`
-
-    window.location.href = googleAuthUrl
   }
 
   return (

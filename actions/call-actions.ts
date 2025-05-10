@@ -1,53 +1,102 @@
 "use server"
+import { createCall, updateCall, getCallById } from "@/lib/models/call"
+import { getUser } from "./auth-actions"
 
-import { getCurrentUser } from "@/lib/auth"
-import {
-  startCall,
-  answerCall as answerCallModel,
-  rejectCall as rejectCallModel,
-  endCall as endCallModel,
-} from "@/lib/models/call"
+export async function initiateCall(formData: FormData) {
+  const user = await getUser()
 
-// Fungsi untuk memulai panggilan
-export async function startCallWithUser(receiverId: string, callType: "audio" | "video") {
-  const user = await getCurrentUser()
   if (!user) {
-    return { error: "Not authenticated" }
+    return { error: "Anda harus login untuk melakukan panggilan" }
   }
 
-  const call = await startCall(user.id, receiverId, callType)
-  return { data: call }
+  const receiverId = formData.get("receiverId") as string
+
+  if (!receiverId) {
+    return { error: "Penerima panggilan tidak ditemukan" }
+  }
+
+  try {
+    const call = await createCall({
+      callerId: user.id,
+      receiverId,
+      status: "initiated",
+    })
+
+    return { success: true, call }
+  } catch (error) {
+    console.error("Initiate call error:", error)
+    return { error: "Terjadi kesalahan saat memulai panggilan" }
+  }
 }
 
-// Fungsi untuk menjawab panggilan
-export async function answerCallAction(callId: string) {
-  const user = await getCurrentUser()
+export async function answerCall(formData: FormData) {
+  const user = await getUser()
+
   if (!user) {
-    return { error: "Not authenticated" }
+    return { error: "Anda harus login untuk menjawab panggilan" }
   }
 
-  const call = await answerCallModel(callId)
-  return { data: call }
+  const callId = formData.get("callId") as string
+
+  if (!callId) {
+    return { error: "ID panggilan tidak ditemukan" }
+  }
+
+  try {
+    const call = await getCallById(callId)
+
+    if (!call) {
+      return { error: "Panggilan tidak ditemukan" }
+    }
+
+    if (call.receiverId !== user.id) {
+      return { error: "Anda tidak berhak menjawab panggilan ini" }
+    }
+
+    const updatedCall = await updateCall(callId, {
+      status: "answered",
+      answeredAt: new Date().toISOString(),
+    })
+
+    return { success: true, call: updatedCall }
+  } catch (error) {
+    console.error("Answer call error:", error)
+    return { error: "Terjadi kesalahan saat menjawab panggilan" }
+  }
 }
 
-// Fungsi untuk menolak panggilan
-export async function rejectCallAction(callId: string) {
-  const user = await getCurrentUser()
+export async function endCall(formData: FormData) {
+  const user = await getUser()
+
   if (!user) {
-    return { error: "Not authenticated" }
+    return { error: "Anda harus login untuk mengakhiri panggilan" }
   }
 
-  const call = await rejectCallModel(callId)
-  return { data: call }
-}
+  const callId = formData.get("callId") as string
 
-// Fungsi untuk mengakhiri panggilan
-export async function endCallAction(callId: string) {
-  const user = await getCurrentUser()
-  if (!user) {
-    return { error: "Not authenticated" }
+  if (!callId) {
+    return { error: "ID panggilan tidak ditemukan" }
   }
 
-  const call = await endCallModel(callId)
-  return { data: call }
+  try {
+    const call = await getCallById(callId)
+
+    if (!call) {
+      return { error: "Panggilan tidak ditemukan" }
+    }
+
+    if (call.callerId !== user.id && call.receiverId !== user.id) {
+      return { error: "Anda tidak berhak mengakhiri panggilan ini" }
+    }
+
+    const updatedCall = await updateCall(callId, {
+      status: "ended",
+      endedAt: new Date().toISOString(),
+    })
+
+    return { success: true, call: updatedCall }
+  } catch (error) {
+    console.error("End call error:", error)
+    return { error: "Terjadi kesalahan saat mengakhiri panggilan" }
+  }
 }

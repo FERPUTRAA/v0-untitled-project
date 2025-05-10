@@ -4,29 +4,29 @@ import { verifyJwt, generateJwt } from "@/lib/auth"
 
 export async function GET() {
   try {
-    // Dapatkan token dari cookie
-    const cookieStore = cookies()
-    const authToken = cookieStore.get("auth_token")?.value
+    const authToken = cookies().get("auth-token")?.value
 
     if (!authToken) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 })
     }
 
-    // Verifikasi token
+    // Verify the auth token
     const payload = await verifyJwt(authToken)
+
     if (!payload || !payload.userId) {
       return NextResponse.json({ error: "Invalid token" }, { status: 401 })
     }
 
-    // Buat token khusus untuk socket dengan waktu kedaluwarsa yang lebih pendek
-    const socketToken = await generateJwt(
-      { userId: payload.userId },
-      { expiresIn: "1h" }, // Token socket berlaku 1 jam
-    )
+    // Generate a short-lived token for socket authentication
+    const socketToken = await generateJwt({
+      userId: payload.userId,
+      purpose: "socket",
+      exp: Math.floor(Date.now() / 1000) + 60 * 60, // 1 hour
+    })
 
     return NextResponse.json({ token: socketToken })
   } catch (error) {
     console.error("Error generating socket token:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    return NextResponse.json({ error: "Server error" }, { status: 500 })
   }
 }

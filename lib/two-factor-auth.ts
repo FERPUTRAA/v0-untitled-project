@@ -44,6 +44,12 @@ export function verifyTOTP(secret: string, userToken: string) {
   return expectedTokens.includes(userToken)
 }
 
+// Fungsi untuk menghasilkan kode TOTP saat ini
+export function generateTOTP(secret: string): string {
+  const now = Math.floor(Date.now() / 1000 / 30)
+  return calculateTOTP(secret, now)
+}
+
 // Fungsi pembantu untuk menghitung token TOTP
 // Ini adalah implementasi sederhana, dalam aplikasi nyata gunakan library yang tepat
 function calculateTOTP(secret: string, counter: number) {

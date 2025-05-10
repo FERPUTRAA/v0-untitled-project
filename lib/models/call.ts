@@ -11,7 +11,7 @@ export type Call = {
   callType: "audio" | "video"
 }
 
-export async function startCall(callerId: string, receiverId: string, callType: "audio" | "video"): Promise<Call> {
+export async function createCall(callerId: string, receiverId: string, callType: "audio" | "video"): Promise<Call> {
   const id = generateId()
   const now = getCurrentTimestamp()
 
@@ -39,14 +39,13 @@ export async function getCallById(id: string): Promise<Call | null> {
   return (call as Call) || null
 }
 
-export async function updateCallStatus(id: string, status: Call["status"], endTime?: string): Promise<Call | null> {
+export async function updateCall(id: string, updatedFields: Partial<Call>): Promise<Call | null> {
   const call = await getCallById(id)
   if (!call) return null
 
   const updatedCall = {
     ...call,
-    status,
-    ...(endTime ? { endTime } : {}),
+    ...updatedFields,
   }
 
   await redis.hset(`${KEYS.CALL}${id}`, updatedCall)
@@ -55,15 +54,42 @@ export async function updateCallStatus(id: string, status: Call["status"], endTi
 }
 
 export async function answerCall(id: string): Promise<Call | null> {
-  return updateCallStatus(id, "answered")
+  const call = await getCallById(id)
+  if (!call) return null
+
+  const updatedCall: Call = {
+    ...call,
+    status: "answered",
+  }
+
+  await redis.hset(`${KEYS.CALL}${id}`, updatedCall)
+  return updatedCall
 }
 
 export async function rejectCall(id: string): Promise<Call | null> {
-  return updateCallStatus(id, "rejected", getCurrentTimestamp())
+  const call = await getCallById(id)
+  if (!call) return null
+
+  const updatedCall: Call = {
+    ...call,
+    status: "rejected",
+  }
+
+  await redis.hset(`${KEYS.CALL}${id}`, updatedCall)
+  return updatedCall
 }
 
 export async function endCall(id: string): Promise<Call | null> {
-  return updateCallStatus(id, "answered", getCurrentTimestamp())
+  const call = await getCallById(id)
+  if (!call) return null
+
+  const updatedCall: Call = {
+    ...call,
+    status: "rejected",
+  }
+
+  await redis.hset(`${KEYS.CALL}${id}`, updatedCall)
+  return updatedCall
 }
 
 export async function getCallHistory(userId: string, limit = 10): Promise<any[]> {

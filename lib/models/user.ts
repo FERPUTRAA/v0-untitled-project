@@ -1,26 +1,53 @@
-import { redis, KEYS, generateId, getCurrentTimestamp } from "../redis"
+import { Redis } from "@upstash/redis"
+import { v4 as uuidv4 } from "uuid"
 
+// Inisialisasi Redis client
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL || "",
+  token: process.env.KV_REST_API_TOKEN || "",
+})
+
+// Tipe data User
 export type User = {
   id: string
   email: string
   fullName: string
-  username: string
-  avatarEmoji: string
+  username?: string
+  avatarEmoji?: string
+  avatarUrl?: string
   createdAt: string
   updatedAt: string
-  lastOnline: string
+  lastOnline?: string
   location?: string
   bio?: string
   age?: number
   gender?: string
-  shareLocation: boolean
-  lastProfileChange?: string
+  shareLocation?: boolean
   hashedPassword?: string
+  provider?: string
+  googleId?: string
 }
 
-export async function createUser(
-  userData: Omit<User, "id" | "createdAt" | "updatedAt" | "lastOnline"> & { password?: string },
-): Promise<User> {
+// Fungsi untuk membuat ID unik
+export function generateId(): string {
+  return uuidv4()
+}
+
+// Fungsi untuk mendapatkan timestamp saat ini
+export function getCurrentTimestamp(): string {
+  return new Date().toISOString()
+}
+
+// Fungsi untuk membuat user baru
+export async function createUser(userData: {
+  email: string
+  fullName: string
+  avatarEmoji?: string
+  avatarUrl?: string
+  password?: string
+  provider?: string
+  googleId?: string
+}): Promise<User> {
   const id = generateId()
   const now = getCurrentTimestamp()
 
@@ -28,92 +55,137 @@ export async function createUser(
     id,
     email: userData.email,
     fullName: userData.fullName,
-    username: userData.username || userData.email.split("@")[0],
-    avatarEmoji: userData.avatarEmoji,
+    username: userData.email.split("@")[0],
+    avatarEmoji: userData.avatarEmoji || "😊",
+    avatarUrl: userData.avatarUrl,
     createdAt: now,
     updatedAt: now,
     lastOnline: now,
-    location: userData.location,
-    bio: userData.bio,
-    age: userData.age,
-    gender: userData.gender,
-    shareLocation: userData.shareLocation || false,
-    lastProfileChange: userData.lastProfileChange,
-    hashedPassword: userData.password ? await hashPassword(userData.password) : undefined,
+    shareLocation: false,
+    provider: userData.provider || "email",
+    googleId: userData.googleId,
+  }
+
+  if (userData.password) {
+    // Dalam aplikasi nyata, gunakan bcrypt atau argon2
+    user.hashedPassword = Buffer.from(userData.password).toString("base64")
   }
 
   // Simpan user di Redis
-  await redis.hset(`${KEYS.USER}${id}`, user)
+  await redis.hset(`user:${id}`, user)
 
   // Simpan referensi email ke id
-  await redis.set(`${KEYS.USER_BY_EMAIL}${userData.email.toLowerCase()}`, id)
+  await redis.set(`email:${userData.email.toLowerCase()}`, id)
 
   return user
 }
 
+// Fungsi untuk mendapatkan user berdasarkan ID
 export async function getUserById(id: string): Promise<User | null> {
-  const user = await redis.hgetall(`${KEYS.USER}${id}`)
-  return (user as User) || null
+  try {
+    const user = await redis.hgetall(`user:${id}`)
+    return user ? (user as unknown as User) : null
+  } catch (error) {
+    console.error("Error getting user by ID:", error)
+    return null
+  }
 }
 
+// Fungsi untuk mendapatkan user berdasarkan email
 export async function getUserByEmail(email: string): Promise<User | null> {
-  const userId = await redis.get(`${KEYS.USER_BY_EMAIL}${email.toLowerCase()}`)
-  if (!userId) return null
+  try {
+    const userId = await redis.get(`email:${email.toLowerCase()}`)
+    if (!userId) return null
 
-  return getUserById(userId as string)
+    return getUserById(userId as string)
+  } catch (error) {
+    console.error("Error getting user by email:", error)
+    return null
+  }
 }
 
+// Fungsi untuk memperbarui user
 export async function updateUser(id: string, userData: Partial<User>): Promise<User | null> {
-  const user = await getUserById(id)
-  if (!user) return null
+  try {
+    const user = await getUserById(id)
+    if (!user) return null
 
-  const updatedUser = {
-    ...user,
-    ...userData,
-    updatedAt: getCurrentTimestamp(),
-  }
-
-  await redis.hset(`${KEYS.USER}${id}`, updatedUser)
-
-  return updatedUser
-}
-
-export async function updateLastOnline(id: string): Promise<void> {
-  await redis.hset(`${KEYS.USER}${id}`, { lastOnline: getCurrentTimestamp() })
-}
-
-export async function getNearbyUsers(userId: string, limit = 10): Promise<(User & { distance: number })[]> {
-  // Dapatkan semua user
-  const userKeys = await redis.keys(`${KEYS.USER}*`)
-  const users: User[] = []
-
-  for (const key of userKeys) {
-    const id = key.replace(KEYS.USER, "")
-    if (id !== userId) {
-      const user = await getUserById(id)
-      if (user) users.push(user)
+    const updatedUser = {
+      ...user,
+      ...userData,
+      updatedAt: getCurrentTimestamp(),
     }
+
+    await redis.hset(`user:${id}`, updatedUser)
+
+    return updatedUser
+  } catch (error) {
+    console.error("Error updating user:", error)
+    return null
   }
-
-  // Batasi jumlah dan tambahkan jarak acak (untuk demo)
-  return users.slice(0, limit).map((user) => ({
-    ...user,
-    distance: Math.round(Math.random() * 20 * 10) / 10, // Jarak acak 0-20 km
-  }))
 }
 
-// Fungsi untuk hashing password
-async function hashPassword(password: string): Promise<string> {
-  // Dalam aplikasi nyata, gunakan bcrypt atau argon2
-  // Untuk demo, kita gunakan implementasi sederhana
-  return Buffer.from(password).toString("base64")
-}
-
-// Fungsi untuk verifikasi password
+// Fungsi untuk memverifikasi password
 export async function verifyPassword(user: User, password: string): Promise<boolean> {
   if (!user.hashedPassword) return false
 
   // Dalam aplikasi nyata, gunakan bcrypt atau argon2
   const hashedInput = Buffer.from(password).toString("base64")
   return user.hashedPassword === hashedInput
+}
+
+// Fungsi untuk mendapatkan pengguna terdekat
+export async function getNearbyUsers(userId: string, limit = 10): Promise<User[]> {
+  try {
+    // Dapatkan semua kunci user
+    const keys = await redis.keys("user:*")
+    const users: User[] = []
+
+    // Ambil data untuk setiap user
+    for (const key of keys) {
+      const id = key.replace("user:", "")
+      if (id !== userId) {
+        const user = await getUserById(id)
+        if (user) users.push(user)
+      }
+    }
+
+    // Batasi jumlah hasil
+    return users.slice(0, limit)
+  } catch (error) {
+    console.error("Error getting nearby users:", error)
+    return []
+  }
+}
+
+// Fungsi untuk mencari pengguna berdasarkan nama atau email
+export async function searchUsers(query: string, currentUserId: string): Promise<User[]> {
+  try {
+    // Dapatkan semua kunci user
+    const keys = await redis.keys("user:*")
+    const users: User[] = []
+
+    // Ambil data untuk setiap user
+    for (const key of keys) {
+      const id = key.replace("user:", "")
+      if (id !== currentUserId) {
+        const user = await getUserById(id)
+        if (user) {
+          // Cari berdasarkan nama, username, atau email
+          const fullNameMatch = user.fullName.toLowerCase().includes(query.toLowerCase())
+          const usernameMatch = user.username?.toLowerCase().includes(query.toLowerCase())
+          const emailMatch = user.email.toLowerCase().includes(query.toLowerCase())
+
+          if (fullNameMatch || usernameMatch || emailMatch) {
+            users.push(user)
+          }
+        }
+      }
+    }
+
+    return users
+  } catch (error) {
+    console.error("Error searching users:", error)
+    return []
+  }
 }

@@ -42,6 +42,9 @@ export async function sendMessage(messageData: Omit<Message, "id" | "createdAt">
   return message
 }
 
+// Alias untuk sendMessage untuk kompatibilitas dengan kode yang ada
+export const createMessage = sendMessage
+
 export async function getMessageById(id: string): Promise<Message | null> {
   const message = await redis.hgetall(`${KEYS.MESSAGE}${id}`)
   return (message as Message) || null
@@ -69,6 +72,9 @@ export async function getMessagesBetweenUsers(userId1: string, userId2: string, 
 
   return messages.reverse() // Kembalikan dalam urutan kronologis
 }
+
+// Alias untuk getMessagesBetweenUsers untuk kompatibilitas dengan kode yang ada
+export const getMessagesByConversationId = getMessagesBetweenUsers
 
 export async function getChatList(userId: string): Promise<any[]> {
   // Dapatkan semua kunci pesan yang melibatkan pengguna ini

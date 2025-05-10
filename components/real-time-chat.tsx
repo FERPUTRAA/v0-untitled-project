@@ -3,294 +3,257 @@
 import type React from "react"
 
 import { useState, useEffect, useRef } from "react"
+import { useSocketContext } from "@/context/socket-context"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Send, Smile } from "lucide-react"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { useSocketContext } from "@/context/socket-context"
-import { getChatMessagesWithUser } from "@/actions/message-actions"
-import { v4 as uuidv4 } from "uuid"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Card, CardContent } from "@/components/ui/card"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Send, Mic, ImageIcon, Paperclip } from "lucide-react"
 
-interface RealTimeChatProps {
-  userId: string
-  contactId: string
-  contactName: string
+type Message = {
+  id: string
+  senderId: string
+  receiverId: string
+  conversationId: string
+  content: string
+  type: string
+  createdAt: string
+  read: boolean
 }
 
-export function RealTimeChat({ userId, contactId, contactName }: RealTimeChatProps) {
-  const { socket, isConnected } = useSocketContext()
-  const [input, setInput] = useState("")
-  const [messages, setMessages] = useState<any[]>([])
+type User = {
+  id: string
+  fullName: string
+  avatarUrl?: string
+}
+
+type RealTimeChatProps = {
+  conversationId: string
+  currentUser: User
+  otherUser: User
+  initialMessages: Message[]
+}
+
+export function RealTimeChat({ conversationId, currentUser, otherUser, initialMessages }: RealTimeChatProps) {
+  const [messages, setMessages] = useState<Message[]>(initialMessages)
+  const [newMessage, setNewMessage] = useState("")
   const [isTyping, setIsTyping] = useState(false)
-  const [contactTyping, setContactTyping] = useState(false)
+  const [otherUserTyping, setOtherUserTyping] = useState(false)
+  const { socket, isConnected, sendMessage } = useSocketContext()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
-  // Ambil riwayat pesan
-  useEffect(() => {
-    const fetchMessages = async () => {
-      const { data, error } = await getChatMessagesWithUser(contactId)
-      if (data && !error) {
-        setMessages(data)
-
-        // Tandai pesan sebagai dibaca
-        const unreadMessages = data.filter((msg) => msg.senderId === contactId && !msg.read).map((msg) => msg.id)
-
-        if (unreadMessages.length > 0 && socket) {
-          socket.emit("chat:read", {
-            senderId: contactId,
-            messageIds: unreadMessages,
-          })
-        }
-      }
-    }
-
-    if (contactId) {
-      fetchMessages()
-    }
-  }, [contactId, socket])
-
-  // Set up event listener untuk pesan masuk
-  useEffect(() => {
-    if (!socket) return
-
-    const handleIncomingMessage = (data: any) => {
-      if (data.senderId === contactId) {
-        const newMessage = {
-          id: data.id,
-          senderId: data.senderId,
-          receiverId: userId,
-          content: data.content,
-          createdAt: data.createdAt,
-          read: true,
-        }
-
-        setMessages((prev) => [...prev, newMessage])
-
-        // Kirim read receipt
-        socket.emit("chat:read", {
-          senderId: contactId,
-          messageIds: [data.id],
-        })
-      }
-    }
-
-    const handleMessageSent = (data: any) => {
-      // Update status pesan di state
-      setMessages((prev) => prev.map((msg) => (msg.id === data.messageId ? { ...msg, sent: true } : msg)))
-    }
-
-    const handleReadReceipt = (data: any) => {
-      if (data.readerId === contactId) {
-        // Update status pesan di state
-        setMessages((prev) => prev.map((msg) => (data.messageIds.includes(msg.id) ? { ...msg, read: true } : msg)))
-      }
-    }
-
-    const handleTyping = (data: any) => {
-      if (data.senderId === contactId) {
-        setContactTyping(data.isTyping)
-      }
-    }
-
-    socket.on("chat:message", handleIncomingMessage)
-    socket.on("chat:message:sent", handleMessageSent)
-    socket.on("chat:read", handleReadReceipt)
-    socket.on("chat:typing", handleTyping)
-
-    return () => {
-      socket.off("chat:message", handleIncomingMessage)
-      socket.off("chat:message:sent", handleMessageSent)
-      socket.off("chat:read", handleReadReceipt)
-      socket.off("chat:typing", handleTyping)
-    }
-  }, [socket, userId, contactId])
-
-  // Auto-scroll ke bawah saat pesan berubah
+  // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
 
-  // Kirim indikator mengetik
+  // Listen for socket events
   useEffect(() => {
-    if (!socket || !isConnected) return
+    if (!socket) return
 
-    if (isTyping) {
-      socket.emit("chat:typing", {
-        receiverId: contactId,
+    // Handle incoming messages
+    const handleNewMessage = (message: Message) => {
+      if (message.conversationId === conversationId) {
+        setMessages((prev) => [...prev, message])
+
+        // Mark message as read if it's from the other user
+        if (message.senderId === otherUser.id) {
+          sendMessage("chat:read", {
+            conversationId,
+            messageId: message.id,
+          })
+        }
+
+        // Reset typing indicator
+        setOtherUserTyping(false)
+      }
+    }
+
+    // Handle message read status
+    const handleMessageRead = (data: { userId: string; messageId: string; conversationId: string }) => {
+      if (data.conversationId === conversationId && data.userId === otherUser.id) {
+        setMessages((prev) => prev.map((msg) => (msg.id === data.messageId ? { ...msg, read: true } : msg)))
+      }
+    }
+
+    // Handle typing indicator
+    const handleTyping = (data: { userId: string; conversationId: string; isTyping: boolean }) => {
+      if (data.conversationId === conversationId && data.userId === otherUser.id) {
+        setOtherUserTyping(data.isTyping)
+      }
+    }
+
+    // Subscribe to events
+    socket.on("chat:message", handleNewMessage)
+    socket.on("chat:read", handleMessageRead)
+    socket.on("chat:typing", handleTyping)
+
+    // Cleanup
+    return () => {
+      socket.off("chat:message", handleNewMessage)
+      socket.off("chat:read", handleMessageRead)
+      socket.off("chat:typing", handleTyping)
+    }
+  }, [socket, conversationId, otherUser.id, sendMessage])
+
+  // Handle typing indicator
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setNewMessage(e.target.value)
+
+    if (!isTyping) {
+      setIsTyping(true)
+      sendMessage("chat:typing", {
+        conversationId,
         isTyping: true,
       })
     }
 
-    // Bersihkan timeout sebelumnya
+    // Reset typing timeout
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current)
     }
 
-    // Set timeout baru untuk berhenti mengetik
+    // Set new timeout
     typingTimeoutRef.current = setTimeout(() => {
-      if (socket && isConnected) {
-        socket.emit("chat:typing", {
-          receiverId: contactId,
-          isTyping: false,
-        })
-      }
       setIsTyping(false)
+      sendMessage("chat:typing", {
+        conversationId,
+        isTyping: false,
+      })
     }, 2000)
-
-    return () => {
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current)
-      }
-    }
-  }, [isTyping, socket, isConnected, contactId])
-
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setInput(e.target.value)
-    if (!isTyping && e.target.value.trim()) {
-      setIsTyping(true)
-    }
   }
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault()
+  // Send message
+  const handleSendMessage = () => {
+    if (!newMessage.trim() || !isConnected) return
 
-    if (!input.trim() || !socket) return
-
-    const messageId = uuidv4()
-    const newMessage = {
-      id: messageId,
-      senderId: userId,
-      receiverId: contactId,
-      content: input,
-      createdAt: new Date().toISOString(),
-      read: false,
-      sent: false,
+    const messageData = {
+      conversationId,
+      receiverId: otherUser.id,
+      content: newMessage.trim(),
+      type: "text",
     }
 
-    // Tambahkan pesan ke state
-    setMessages((prev) => [...prev, newMessage])
+    // Send message via socket
+    sendMessage("chat:message", messageData)
 
-    // Kirim pesan melalui socket
-    socket.emit("chat:message", {
-      receiverId: contactId,
-      message: input,
-      messageId,
-    })
+    // Clear input
+    setNewMessage("")
 
-    // Reset input dan status mengetik
-    setInput("")
+    // Reset typing indicator
     setIsTyping(false)
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current)
     }
-
-    // Kirim status berhenti mengetik
-    socket.emit("chat:typing", {
-      receiverId: contactId,
+    sendMessage("chat:typing", {
+      conversationId,
       isTyping: false,
     })
   }
 
-  const addEmoji = (emoji: string) => {
-    setInput((prev) => prev + emoji)
-    setIsTyping(true)
+  // Handle key press
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault()
+      handleSendMessage()
+    }
   }
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((message) => (
-          <div key={message.id} className={`flex ${message.senderId === userId ? "justify-end" : "justify-start"}`}>
+      <ScrollArea className="flex-1 p-4">
+        <div className="space-y-4">
+          {messages.map((message) => (
             <div
-              className={`max-w-[80%] px-4 py-2 rounded-lg ${
-                message.senderId === userId ? "bg-rose-600 text-white" : "bg-gray-200 text-gray-800"
-              }`}
+              key={message.id}
+              className={`flex ${message.senderId === currentUser.id ? "justify-end" : "justify-start"}`}
             >
-              {message.content}
-              {message.senderId === userId && (
-                <span className="text-xs ml-2 opacity-70">{message.read ? "✓✓" : message.sent ? "✓" : "⏱"}</span>
+              {message.senderId !== currentUser.id && (
+                <Avatar className="h-8 w-8 mr-2">
+                  <AvatarImage src={otherUser.avatarUrl || "/placeholder.svg"} alt={otherUser.fullName} />
+                  <AvatarFallback>{otherUser.fullName.charAt(0)}</AvatarFallback>
+                </Avatar>
+              )}
+              <div>
+                <Card
+                  className={`max-w-md ${
+                    message.senderId === currentUser.id ? "bg-blue-500 text-white" : "bg-gray-100 dark:bg-gray-800"
+                  }`}
+                >
+                  <CardContent className="p-3">
+                    <p>{message.content}</p>
+                  </CardContent>
+                </Card>
+                <div
+                  className={`text-xs text-gray-500 mt-1 flex items-center ${
+                    message.senderId === currentUser.id ? "justify-end" : "justify-start"
+                  }`}
+                >
+                  {new Date(message.createdAt).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                  {message.senderId === currentUser.id && (
+                    <span className="ml-1">{message.read ? " • Read" : " • Sent"}</span>
+                  )}
+                </div>
+              </div>
+              {message.senderId === currentUser.id && (
+                <Avatar className="h-8 w-8 ml-2">
+                  <AvatarImage src={currentUser.avatarUrl || "/placeholder.svg"} alt={currentUser.fullName} />
+                  <AvatarFallback>{currentUser.fullName.charAt(0)}</AvatarFallback>
+                </Avatar>
               )}
             </div>
-          </div>
-        ))}
-        {contactTyping && (
-          <div className="flex justify-start">
-            <div className="bg-gray-100 text-gray-500 px-4 py-2 rounded-lg">{contactName} sedang mengetik...</div>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
+          ))}
+          {otherUserTyping && (
+            <div className="flex items-center">
+              <Avatar className="h-8 w-8 mr-2">
+                <AvatarImage src={otherUser.avatarUrl || "/placeholder.svg"} alt={otherUser.fullName} />
+                <AvatarFallback>{otherUser.fullName.charAt(0)}</AvatarFallback>
+              </Avatar>
+              <Card className="bg-gray-100 dark:bg-gray-800">
+                <CardContent className="p-3">
+                  <div className="flex space-x-1">
+                    <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" />
+                    <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce delay-75" />
+                    <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce delay-150" />
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+      </ScrollArea>
 
-      <div className="border-t p-4">
-        <form onSubmit={handleSendMessage} className="flex space-x-2">
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="outline" size="icon">
-                <Smile className="h-5 w-5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-64 p-2">
-              <div className="grid grid-cols-8 gap-1">
-                {[
-                  "😀",
-                  "😂",
-                  "😍",
-                  "🥰",
-                  "😎",
-                  "🤔",
-                  "😊",
-                  "👍",
-                  "❤️",
-                  "😢",
-                  "😭",
-                  "🎉",
-                  "🔥",
-                  "👏",
-                  "🙏",
-                  "✨",
-                  "🥺",
-                  "😘",
-                  "🤣",
-                  "😅",
-                  "😁",
-                  "😆",
-                  "😉",
-                  "🤗",
-                  "🤩",
-                  "😋",
-                  "😇",
-                  "🥳",
-                  "😜",
-                  "😝",
-                  "🤪",
-                  "😏",
-                ].map((emoji) => (
-                  <button
-                    key={emoji}
-                    className="text-xl p-1 hover:bg-gray-100 rounded"
-                    onClick={() => addEmoji(emoji)}
-                    type="button"
-                  >
-                    {emoji}
-                  </button>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
-
+      <div className="p-4 border-t">
+        <div className="flex items-center space-x-2">
+          <Button variant="ghost" size="icon">
+            <Paperclip className="h-5 w-5" />
+          </Button>
+          <Button variant="ghost" size="icon">
+            <ImageIcon className="h-5 w-5" />
+          </Button>
+          <Button variant="ghost" size="icon">
+            <Mic className="h-5 w-5" />
+          </Button>
           <Input
-            value={input}
+            placeholder="Type a message..."
+            value={newMessage}
             onChange={handleInputChange}
-            placeholder={isConnected ? "Ketik pesan..." : "Menghubungkan..."}
+            onKeyDown={handleKeyPress}
             className="flex-1"
-            disabled={!isConnected}
           />
-
-          <Button type="submit" size="icon" disabled={!isConnected || !input.trim()}>
+          <Button onClick={handleSendMessage} disabled={!newMessage.trim() || !isConnected}>
             <Send className="h-5 w-5" />
           </Button>
-        </form>
+        </div>
+        {!isConnected && (
+          <p className="text-xs text-red-500 mt-1">Not connected to server. Messages will not be sent.</p>
+        )}
       </div>
     </div>
   )
