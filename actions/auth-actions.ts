@@ -1,126 +1,86 @@
 "use server"
 
 import { cookies } from "next/headers"
-import { redirect } from "next/navigation"
 import { createUser, getUserByEmail, getUserById } from "@/lib/models/user"
-import { generateJwt, verifyJwt } from "@/lib/auth"
-import bcrypt from "bcryptjs"
+import { auth as adminAuth } from "@/lib/firebase-admin"
+import { revalidatePath } from "next/cache"
 
-export async function loginUser(formData: FormData) {
-  const email = formData.get("email") as string
-  const password = formData.get("password") as string
-
-  if (!email || !password) {
-    return { error: "Email dan password diperlukan" }
-  }
-
+// Sinkronkan user Firebase dengan database kita
+export async function syncUserWithDatabase(firebaseUser: {
+  uid: string
+  email: string
+  displayName: string
+  photoURL: string
+  idToken: string
+}) {
   try {
-    const user = await getUserByEmail(email)
+    // Verifikasi token Firebase
+    const decodedToken = await adminAuth.verifyIdToken(firebaseUser.idToken)
+
+    // Cek apakah user sudah ada di database
+    let user = await getUserByEmail(firebaseUser.email)
 
     if (!user) {
-      return { error: "Email atau password salah" }
+      // Buat user baru jika belum ada
+      user = await createUser({
+        email: firebaseUser.email,
+        fullName: firebaseUser.displayName,
+        avatarUrl: firebaseUser.photoURL,
+        provider: "firebase",
+        firebaseUid: firebaseUser.uid,
+      })
     }
 
-    const passwordMatch = await bcrypt.compare(password, user.passwordHash || "")
-
-    if (!passwordMatch) {
-      return { error: "Email atau password salah" }
-    }
-
-    // Buat token JWT
-    const token = await generateJwt({ userId: user.id })
-
-    // Simpan token di cookie
+    // Set cookie dengan Firebase UID
     cookies().set({
-      name: "auth-token",
-      value: token,
+      name: "firebase-auth-token",
+      value: firebaseUser.idToken,
       httpOnly: true,
       path: "/",
       secure: process.env.NODE_ENV === "production",
-      maxAge: 60 * 60 * 24 * 7, // 1 minggu
+      maxAge: 60 * 60, // 1 hour (Firebase tokens expire after 1 hour)
       sameSite: "lax",
     })
 
+    revalidatePath("/")
     return { success: true, user }
   } catch (error) {
-    console.error("Login error:", error)
-    return { error: "Terjadi kesalahan saat login" }
+    console.error("Error syncing user with database:", error)
+    return { success: false, error: "Failed to sync user with database" }
   }
 }
 
-export async function signupUser(formData: FormData) {
-  const email = formData.get("email") as string
-  const password = formData.get("password") as string
-  const fullName = formData.get("fullName") as string
-
-  if (!email || !password || !fullName) {
-    return { error: "Semua kolom harus diisi" }
-  }
-
-  try {
-    // Periksa apakah email sudah digunakan
-    const existingUser = await getUserByEmail(email)
-
-    if (existingUser) {
-      return { error: "Email sudah digunakan" }
-    }
-
-    // Hash password
-    const salt = await bcrypt.genSalt(10)
-    const passwordHash = await bcrypt.hash(password, salt)
-
-    // Buat user baru
-    const newUser = await createUser({
-      email,
-      passwordHash,
-      fullName,
-      provider: "email",
-    })
-
-    // Buat token JWT
-    const token = await generateJwt({ userId: newUser.id })
-
-    // Simpan token di cookie
-    cookies().set({
-      name: "auth-token",
-      value: token,
-      httpOnly: true,
-      path: "/",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 60 * 60 * 24 * 7, // 1 minggu
-      sameSite: "lax",
-    })
-
-    return { success: true, user: newUser }
-  } catch (error) {
-    console.error("Signup error:", error)
-    return { error: "Terjadi kesalahan saat mendaftar" }
-  }
-}
-
-export async function logoutUser() {
-  cookies().delete("auth-token")
-  redirect("/auth/login")
-}
-
+// Fungsi untuk mendapatkan user saat ini
 export async function getUser() {
-  const token = cookies().get("auth-token")?.value
-
-  if (!token) {
-    return null
-  }
-
   try {
-    const payload = await verifyJwt(token)
+    const token = cookies().get("firebase-auth-token")?.value
 
-    if (!payload || !payload.userId) {
+    if (!token) {
       return null
     }
 
-    const user = await getUserById(payload.userId)
-    return user
+    try {
+      const decodedToken = await adminAuth.verifyIdToken(token)
+      const user = await getUserById(decodedToken.uid)
+      return user
+    } catch (error) {
+      // Token tidak valid atau kedaluwarsa
+      cookies().delete("firebase-auth-token")
+      return null
+    }
   } catch (error) {
-    console.error("Get user error:", error)
+    console.error("Error getting user:", error)
     return null
   }
 }
+
+// Fungsi untuk logout
+export async function logoutUser() {
+  cookies().delete("firebase-auth-token")
+  revalidatePath("/")
+  return { success: true }
+}
+
+// Alias untuk kompatibilitas dengan kode yang sudah ada
+export const loginUser = syncUserWithDatabase
+export const signupUser = syncUserWithDatabase

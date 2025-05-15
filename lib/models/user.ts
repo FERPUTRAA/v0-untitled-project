@@ -26,6 +26,7 @@ export type User = {
   hashedPassword?: string
   provider?: string
   googleId?: string
+  firebaseUid?: string // Tambahkan field untuk Firebase UID
 }
 
 // Fungsi untuk membuat ID unik
@@ -47,9 +48,11 @@ export async function createUser(userData: {
   password?: string
   provider?: string
   googleId?: string
+  firebaseUid?: string // Tambahkan parameter untuk Firebase UID
 }): Promise<User> {
   try {
-    const id = generateId()
+    // Gunakan Firebase UID sebagai ID jika tersedia, atau generate ID baru
+    const id = userData.firebaseUid || generateId()
     const now = getCurrentTimestamp()
 
     const user: User = {
@@ -65,6 +68,7 @@ export async function createUser(userData: {
       shareLocation: false,
       provider: userData.provider || "email",
       googleId: userData.googleId,
+      firebaseUid: userData.firebaseUid,
     }
 
     if (userData.password) {
@@ -82,6 +86,11 @@ export async function createUser(userData: {
     const emailResult = await redis.set(`email:${userData.email.toLowerCase()}`, id)
     console.log("Email reference result:", emailResult)
 
+    // Jika ada Firebase UID, simpan referensi ke ID user
+    if (userData.firebaseUid) {
+      await redis.set(`firebase:${userData.firebaseUid}`, id)
+    }
+
     return user
   } catch (error) {
     console.error("Error creating user:", error)
@@ -98,6 +107,22 @@ export async function getUserById(id: string): Promise<User | null> {
     return user ? (user as unknown as User) : null
   } catch (error) {
     console.error("Error getting user by ID:", error)
+    return null
+  }
+}
+
+// Fungsi untuk mendapatkan user berdasarkan Firebase UID
+export async function getUserByFirebaseUid(firebaseUid: string): Promise<User | null> {
+  try {
+    console.log("Getting user by Firebase UID:", firebaseUid)
+    const userId = await redis.get(`firebase:${firebaseUid}`)
+    console.log("User ID from Firebase UID:", userId || "Not found")
+
+    if (!userId) return null
+
+    return getUserById(userId as string)
+  } catch (error) {
+    console.error("Error getting user by Firebase UID:", error)
     return null
   }
 }
@@ -227,6 +252,11 @@ export async function deleteUser(id: string): Promise<boolean> {
 
     // Hapus referensi email
     await redis.del(`email:${user.email.toLowerCase()}`)
+
+    // Hapus referensi Firebase UID jika ada
+    if (user.firebaseUid) {
+      await redis.del(`firebase:${user.firebaseUid}`)
+    }
 
     // Hapus user
     await redis.del(`user:${id}`)

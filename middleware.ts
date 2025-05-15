@@ -1,48 +1,55 @@
 import { NextResponse } from "next/server"
 import type { NextRequest } from "next/server"
-import { verifyJwt } from "./lib/auth"
+import { auth } from "./lib/firebase-admin"
 
-export async function middleware(req: NextRequest) {
-  const token = req.cookies.get("auth-token")?.value
+// Daftar rute yang memerlukan autentikasi
+const protectedRoutes = ["/dashboard", "/chats", "/profile", "/call"]
 
-  // Jika tidak ada token dan mencoba mengakses rute yang dilindungi
-  if (!token && isProtectedRoute(req.nextUrl.pathname)) {
-    const redirectUrl = new URL("/auth/login", req.url)
-    return NextResponse.redirect(redirectUrl)
+// Daftar rute autentikasi
+const authRoutes = ["/auth/login", "/auth/signup", "/auth/verify-email"]
+
+export async function middleware(request: NextRequest) {
+  const token = request.cookies.get("firebase-auth-token")?.value
+  const { pathname } = request.nextUrl
+
+  // Fungsi untuk memeriksa apakah rute adalah rute autentikasi
+  const isAuthRoute = (route: string) => {
+    return authRoutes.some((authRoute) => pathname.startsWith(authRoute))
+  }
+
+  // Fungsi untuk memeriksa apakah rute adalah rute yang dilindungi
+  const isProtectedRoute = () => {
+    return protectedRoutes.some((route) => pathname.startsWith(route))
+  }
+
+  // Jika tidak ada token dan mengakses rute yang dilindungi, redirect ke login
+  if (!token && isProtectedRoute()) {
+    const url = new URL("/auth/login", request.url)
+    return NextResponse.redirect(url)
   }
 
   // Jika ada token, verifikasi
   if (token) {
-    const payload = await verifyJwt(token)
+    try {
+      // Verifikasi token
+      await auth.verifyIdToken(token)
 
-    // Jika token tidak valid dan mencoba mengakses rute yang dilindungi
-    if (!payload && isProtectedRoute(req.nextUrl.pathname)) {
-      const redirectUrl = new URL("/auth/login", req.url)
-      return NextResponse.redirect(redirectUrl)
-    }
-
-    // Jika token valid dan mencoba mengakses halaman auth
-    if (payload && isAuthRoute(req.nextUrl.pathname)) {
-      const redirectUrl = new URL("/dashboard", req.url)
-      return NextResponse.redirect(redirectUrl)
+      // Jika token valid dan mengakses rute autentikasi, redirect ke dashboard
+      if (isAuthRoute()) {
+        const url = new URL("/dashboard", request.url)
+        return NextResponse.redirect(url)
+      }
+    } catch (error) {
+      // Token tidak valid, hapus cookie
+      if (isProtectedRoute()) {
+        const response = NextResponse.redirect(new URL("/auth/login", request.url))
+        response.cookies.delete("firebase-auth-token")
+        return response
+      }
     }
   }
 
   return NextResponse.next()
-}
-
-// Rute yang memerlukan autentikasi
-function isProtectedRoute(pathname: string): boolean {
-  const protectedRoutes = ["/dashboard", "/profile", "/chats", "/call", "/users", "/security-setup"]
-
-  return protectedRoutes.some((route) => pathname.startsWith(route))
-}
-
-// Rute autentikasi yang tidak boleh diakses jika sudah login
-function isAuthRoute(pathname: string): boolean {
-  const authRoutes = ["/auth/login", "/auth/signup", "/auth/verify-email"]
-
-  return authRoutes.some((route) => pathname.startsWith(route))
 }
 
 export const config = {
@@ -53,7 +60,8 @@ export const config = {
      * - _next/image (image optimization files)
      * - favicon.ico (favicon file)
      * - public (public files)
+     * - api (API routes)
      */
-    "/((?!_next/static|_next/image|favicon.ico|public).*)",
+    "/((?!_next/static|_next/image|favicon.ico|public|api).*)",
   ],
 }

@@ -2,8 +2,8 @@
 
 import type React from "react"
 
-import { useState, useEffect } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
+import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -13,10 +13,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { InfoIcon, Shield } from "lucide-react"
-import { loginUser, signupUser, getUser } from "@/actions/auth-actions"
+import { useFirebaseAuth } from "@/context/firebase-auth-context"
 
 export default function LoginPage() {
-  const [isLoading, setIsLoading] = useState(false)
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [name, setName] = useState("")
@@ -24,28 +23,9 @@ export default function LoginPage() {
   const [signupPassword, setSignupPassword] = useState("")
   const [error, setError] = useState("")
   const [agreedToTerms, setAgreedToTerms] = useState(false)
+
+  const { signIn, signUp, signInWithGoogle, loading } = useFirebaseAuth()
   const router = useRouter()
-  const searchParams = useSearchParams()
-
-  // Check if user is already logged in
-  useEffect(() => {
-    const checkAuth = async () => {
-      const user = await getUser()
-      if (user) {
-        router.push("/dashboard")
-      }
-    }
-
-    checkAuth()
-  }, [router])
-
-  // Check for error in URL
-  useEffect(() => {
-    const errorParam = searchParams.get("error")
-    if (errorParam) {
-      setError(decodeURIComponent(errorParam))
-    }
-  }, [searchParams])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -56,26 +36,10 @@ export default function LoginPage() {
       return
     }
 
-    setIsLoading(true)
-
     try {
-      const formData = new FormData()
-      formData.append("email", email)
-      formData.append("password", password)
-
-      const result = await loginUser(formData)
-
-      if (result.error) {
-        setError(result.error)
-        setIsLoading(false)
-        return
-      }
-
-      // Jika berhasil, arahkan ke dashboard
-      router.push("/dashboard")
+      await signIn(email, password)
     } catch (err: any) {
       setError(err.message || "Terjadi kesalahan saat login")
-      setIsLoading(false)
     }
   }
 
@@ -98,58 +62,18 @@ export default function LoginPage() {
       return
     }
 
-    setIsLoading(true)
-
     try {
-      const formData = new FormData()
-      formData.append("email", signupEmail)
-      formData.append("password", signupPassword)
-      formData.append("fullName", name)
-
-      const result = await signupUser(formData)
-
-      if (result.error) {
-        setError(result.error)
-        setIsLoading(false)
-        return
-      }
-
-      // Jika berhasil, arahkan ke dashboard
-      router.push("/dashboard")
+      await signUp(signupEmail, signupPassword, name)
     } catch (err: any) {
       setError(err.message || "Terjadi kesalahan saat mendaftar")
-      setIsLoading(false)
     }
   }
 
-  // Fungsi untuk login dengan Google
-  const handleGoogleLogin = () => {
+  const handleGoogleLogin = async () => {
     try {
-      setIsLoading(true)
-      setError("")
-
-      // PENTING: Gunakan redirect URI yang TEPAT SAMA dengan yang terdaftar di Google Cloud Console
-      const redirectUri = "https://v0-random-friend-app.vercel.app/auth/google/callback"
-
-      console.log("Using Google Redirect URI:", redirectUri)
-
-      // Pastikan client ID tersedia
-      const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID
-      if (!clientId) {
-        throw new Error("Google Client ID tidak tersedia")
-      }
-
-      const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${
-        clientId
-      }&redirect_uri=${encodeURIComponent(
-        redirectUri,
-      )}&response_type=code&scope=email%20profile&prompt=select_account&access_type=offline`
-
-      window.location.href = googleAuthUrl
+      await signInWithGoogle()
     } catch (err: any) {
-      console.error("Error initiating Google login:", err)
-      setError(err.message || "Terjadi kesalahan saat memulai login Google")
-      setIsLoading(false)
+      setError(err.message || "Terjadi kesalahan saat login dengan Google")
     }
   }
 
@@ -199,8 +123,8 @@ export default function LoginPage() {
                   />
                 </div>
                 {error && <p className="text-sm text-red-500">{error}</p>}
-                <Button className="w-full" type="submit" disabled={isLoading}>
-                  {isLoading ? "Sedang masuk..." : "Masuk"}
+                <Button className="w-full" type="submit" disabled={loading}>
+                  {loading ? "Sedang masuk..." : "Masuk"}
                 </Button>
               </form>
             </TabsContent>
@@ -252,8 +176,8 @@ export default function LoginPage() {
                   </label>
                 </div>
                 {error && <p className="text-sm text-red-500">{error}</p>}
-                <Button className="w-full" type="submit" disabled={isLoading}>
-                  {isLoading ? "Membuat akun..." : "Buat Akun"}
+                <Button className="w-full" type="submit" disabled={loading}>
+                  {loading ? "Membuat akun..." : "Buat Akun"}
                 </Button>
               </form>
             </TabsContent>
@@ -268,8 +192,8 @@ export default function LoginPage() {
             </div>
           </div>
 
-          <Button variant="outline" className="w-full" onClick={handleGoogleLogin} disabled={isLoading}>
-            {isLoading ? (
+          <Button variant="outline" className="w-full" onClick={handleGoogleLogin} disabled={loading}>
+            {loading ? (
               "Memuat..."
             ) : (
               <>

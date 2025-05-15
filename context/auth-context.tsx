@@ -1,101 +1,89 @@
 "use client"
 
 import type React from "react"
-
 import { createContext, useContext, useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
-import { getUser, logoutUser } from "@/actions/auth-actions"
-import { updateUserProfile } from "@/actions/user-actions"
+import { useFirebaseAuth } from "./firebase-auth-context"
+import { getUserByFirebaseUid } from "@/lib/models/user"
 
 type User = {
   id: string
   email: string
   fullName: string
-  username: string
-  avatarEmoji: string
-  createdAt: string
-  updatedAt: string
-  lastOnline: string
-  location?: string
+  avatarUrl?: string
   bio?: string
-  age?: number
-  gender?: string
-  shareLocation: boolean
-  lastProfileChange?: string
+  createdAt: number
+  lastOnline?: number
+  firebaseUid?: string
 }
 
 type AuthContextType = {
   user: User | null
-  isLoading: boolean
+  loading: boolean
+  signIn: (email: string, password: string) => Promise<void>
+  signUp: (email: string, password: string, fullName: string) => Promise<void>
+  signInWithGoogle: () => Promise<void>
   signOut: () => Promise<void>
-  updateProfile: (data: any) => Promise<{ error?: any }>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const router = useRouter()
+  const [loading, setLoading] = useState(true)
+  const firebaseAuth = useFirebaseAuth()
 
   useEffect(() => {
-    // Periksa sesi saat ini
-    const checkSession = async () => {
-      try {
-        const userData = await getUser()
-        if (userData) {
-          setUser(userData as User)
+    const fetchUser = async () => {
+      if (firebaseAuth.user) {
+        try {
+          // Coba dapatkan user dari database berdasarkan Firebase UID
+          const dbUser = await getUserByFirebaseUid(firebaseAuth.user.uid)
+          if (dbUser) {
+            setUser(dbUser)
+          } else {
+            // Jika tidak ditemukan, gunakan data dari Firebase
+            setUser({
+              id: firebaseAuth.user.uid,
+              email: firebaseAuth.user.email || "",
+              fullName: firebaseAuth.user.displayName || "",
+              avatarUrl: firebaseAuth.user.photoURL || undefined,
+              createdAt: Date.now(),
+              firebaseUid: firebaseAuth.user.uid,
+            })
+          }
+        } catch (error) {
+          console.error("Error fetching user from database:", error)
+          setUser(null)
         }
-      } catch (error) {
-        console.error("Error checking session:", error)
-      } finally {
-        setIsLoading(false)
+      } else {
+        setUser(null)
       }
+      setLoading(false)
     }
 
-    checkSession()
-  }, [])
+    fetchUser()
+  }, [firebaseAuth.user])
 
-  const signOut = async () => {
-    try {
-      await logoutUser()
-      setUser(null)
-      router.push("/auth/login")
-    } catch (error) {
-      console.error("Error signing out:", error)
-    }
-  }
+  // Gunakan fungsi dari Firebase Auth
+  const signIn = firebaseAuth.signIn
+  const signUp = firebaseAuth.signUp
+  const signInWithGoogle = firebaseAuth.signInWithGoogle
+  const signOut = firebaseAuth.signOut
 
-  const updateProfile = async (data: any) => {
-    if (!user) {
-      return { error: new Error("User not authenticated") }
-    }
-
-    try {
-      const result = await updateUserProfile(data)
-
-      if (result.error) {
-        return { error: result.error }
-      }
-
-      // Perbarui state user
-      setUser((prev) => (prev ? { ...prev, ...data } : null))
-
-      return {}
-    } catch (error) {
-      console.error("Error updating profile:", error)
-      return { error }
-    }
-  }
-
-  const value = {
-    user,
-    isLoading,
-    signOut,
-    updateProfile,
-  }
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        loading: loading || firebaseAuth.loading,
+        signIn,
+        signUp,
+        signInWithGoogle,
+        signOut,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  )
 }
 
 export function useAuth() {
