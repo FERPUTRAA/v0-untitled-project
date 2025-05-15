@@ -24,7 +24,6 @@ export default function LoginPage() {
   const [signupPassword, setSignupPassword] = useState("")
   const [error, setError] = useState("")
   const [agreedToTerms, setAgreedToTerms] = useState(false)
-  const [googleRedirectUri, setGoogleRedirectUri] = useState("")
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -47,26 +46,6 @@ export default function LoginPage() {
       setError(decodeURIComponent(errorParam))
     }
   }, [searchParams])
-
-  // Fetch config
-  useEffect(() => {
-    const fetchConfig = async () => {
-      try {
-        const response = await fetch("/api/config")
-        if (response.ok) {
-          const config = await response.json()
-          setGoogleRedirectUri(config.googleRedirectUri)
-
-          // Log the redirect URI for debugging
-          console.log("Google Redirect URI:", config.googleRedirectUri)
-        }
-      } catch (error) {
-        console.error("Failed to fetch config:", error)
-      }
-    }
-
-    fetchConfig()
-  }, [])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -149,25 +128,27 @@ export default function LoginPage() {
       setIsLoading(true)
       setError("")
 
-      // Gunakan redirect URI dari API config atau fallback ke nilai default
-      const redirectUri = googleRedirectUri || `${window.location.origin}/auth/google/callback`
+      // PENTING: Gunakan redirect URI yang TEPAT SAMA dengan yang terdaftar di Google Cloud Console
+      const redirectUri = "https://v0-random-friend-app.vercel.app/auth/google/callback"
 
-      // Log the redirect URI being used
       console.log("Using Google Redirect URI:", redirectUri)
 
+      // Pastikan client ID tersedia
+      const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID
+      if (!clientId) {
+        throw new Error("Google Client ID tidak tersedia")
+      }
+
       const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${
-        process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID
+        clientId
       }&redirect_uri=${encodeURIComponent(
         redirectUri,
       )}&response_type=code&scope=email%20profile&prompt=select_account&access_type=offline`
 
-      // Log the full auth URL
-      console.log("Google Auth URL:", googleAuthUrl)
-
       window.location.href = googleAuthUrl
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error initiating Google login:", err)
-      setError("Terjadi kesalahan saat memulai login Google")
+      setError(err.message || "Terjadi kesalahan saat memulai login Google")
       setIsLoading(false)
     }
   }

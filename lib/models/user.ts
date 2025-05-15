@@ -48,42 +48,53 @@ export async function createUser(userData: {
   provider?: string
   googleId?: string
 }): Promise<User> {
-  const id = generateId()
-  const now = getCurrentTimestamp()
+  try {
+    const id = generateId()
+    const now = getCurrentTimestamp()
 
-  const user: User = {
-    id,
-    email: userData.email,
-    fullName: userData.fullName,
-    username: userData.email.split("@")[0],
-    avatarEmoji: userData.avatarEmoji || "😊",
-    avatarUrl: userData.avatarUrl,
-    createdAt: now,
-    updatedAt: now,
-    lastOnline: now,
-    shareLocation: false,
-    provider: userData.provider || "email",
-    googleId: userData.googleId,
+    const user: User = {
+      id,
+      email: userData.email,
+      fullName: userData.fullName,
+      username: userData.email.split("@")[0],
+      avatarEmoji: userData.avatarEmoji || "😊",
+      avatarUrl: userData.avatarUrl,
+      createdAt: now,
+      updatedAt: now,
+      lastOnline: now,
+      shareLocation: false,
+      provider: userData.provider || "email",
+      googleId: userData.googleId,
+    }
+
+    if (userData.password) {
+      // Dalam aplikasi nyata, gunakan bcrypt atau argon2
+      user.hashedPassword = Buffer.from(userData.password).toString("base64")
+    }
+
+    // Simpan user di Redis
+    console.log("Saving user to Redis:", id)
+    const saveResult = await redis.hset(`user:${id}`, user)
+    console.log("Save result:", saveResult)
+
+    // Simpan referensi email ke id
+    console.log("Saving email reference:", userData.email.toLowerCase())
+    const emailResult = await redis.set(`email:${userData.email.toLowerCase()}`, id)
+    console.log("Email reference result:", emailResult)
+
+    return user
+  } catch (error) {
+    console.error("Error creating user:", error)
+    throw new Error("Failed to create user")
   }
-
-  if (userData.password) {
-    // Dalam aplikasi nyata, gunakan bcrypt atau argon2
-    user.hashedPassword = Buffer.from(userData.password).toString("base64")
-  }
-
-  // Simpan user di Redis
-  await redis.hset(`user:${id}`, user)
-
-  // Simpan referensi email ke id
-  await redis.set(`email:${userData.email.toLowerCase()}`, id)
-
-  return user
 }
 
 // Fungsi untuk mendapatkan user berdasarkan ID
 export async function getUserById(id: string): Promise<User | null> {
   try {
+    console.log("Getting user by ID:", id)
     const user = await redis.hgetall(`user:${id}`)
+    console.log("User data from Redis:", user ? "Found" : "Not found")
     return user ? (user as unknown as User) : null
   } catch (error) {
     console.error("Error getting user by ID:", error)
@@ -94,7 +105,10 @@ export async function getUserById(id: string): Promise<User | null> {
 // Fungsi untuk mendapatkan user berdasarkan email
 export async function getUserByEmail(email: string): Promise<User | null> {
   try {
+    console.log("Getting user by email:", email)
     const userId = await redis.get(`email:${email.toLowerCase()}`)
+    console.log("User ID from email:", userId || "Not found")
+
     if (!userId) return null
 
     return getUserById(userId as string)
@@ -107,8 +121,12 @@ export async function getUserByEmail(email: string): Promise<User | null> {
 // Fungsi untuk memperbarui user
 export async function updateUser(id: string, userData: Partial<User>): Promise<User | null> {
   try {
+    console.log("Updating user:", id)
     const user = await getUserById(id)
-    if (!user) return null
+    if (!user) {
+      console.log("User not found for update")
+      return null
+    }
 
     const updatedUser = {
       ...user,
@@ -116,6 +134,7 @@ export async function updateUser(id: string, userData: Partial<User>): Promise<U
       updatedAt: getCurrentTimestamp(),
     }
 
+    console.log("Saving updated user to Redis")
     await redis.hset(`user:${id}`, updatedUser)
 
     return updatedUser
@@ -138,7 +157,10 @@ export async function verifyPassword(user: User, password: string): Promise<bool
 export async function getNearbyUsers(userId: string, limit = 10): Promise<User[]> {
   try {
     // Dapatkan semua kunci user
+    console.log("Getting nearby users for:", userId)
     const keys = await redis.keys("user:*")
+    console.log("Found user keys:", keys.length)
+
     const users: User[] = []
 
     // Ambil data untuk setiap user
@@ -150,6 +172,7 @@ export async function getNearbyUsers(userId: string, limit = 10): Promise<User[]
       }
     }
 
+    console.log("Returning nearby users:", users.length)
     // Batasi jumlah hasil
     return users.slice(0, limit)
   } catch (error) {
@@ -162,6 +185,7 @@ export async function getNearbyUsers(userId: string, limit = 10): Promise<User[]
 export async function searchUsers(query: string, currentUserId: string): Promise<User[]> {
   try {
     // Dapatkan semua kunci user
+    console.log("Searching users with query:", query)
     const keys = await redis.keys("user:*")
     const users: User[] = []
 
@@ -183,9 +207,38 @@ export async function searchUsers(query: string, currentUserId: string): Promise
       }
     }
 
+    console.log("Search results:", users.length)
     return users
   } catch (error) {
     console.error("Error searching users:", error)
     return []
   }
 }
+
+// Fungsi untuk menghapus user
+export async function deleteUser(id: string): Promise<boolean> {
+  try {
+    console.log("Deleting user:", id)
+    const user = await getUserById(id)
+    if (!user) {
+      console.log("User not found for deletion")
+      return false
+    }
+
+    // Hapus referensi email
+    await redis.del(`email:${user.email.toLowerCase()}`)
+
+    // Hapus user
+    await redis.del(`user:${id}`)
+
+    console.log("User deleted successfully")
+    return true
+  } catch (error) {
+    console.error("Error deleting user:", error)
+    return false
+  }
+}
+
+// Alias untuk kompatibilitas
+export const getCurrentUserProfile = getUserById
+export const getUserProfile = getUserById

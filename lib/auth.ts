@@ -39,12 +39,8 @@ export async function loginWithGoogle(code: string) {
   try {
     console.log("Starting Google login process")
 
-    // Tentukan redirect URI
-    const redirectUri =
-      process.env.NEXT_PUBLIC_GOOGLE_REDIRECT_URI ||
-      (process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}/auth/google/callback`
-        : "http://localhost:3000/auth/google/callback")
+    // PENTING: Gunakan redirect URI yang TEPAT SAMA dengan yang terdaftar di Google Cloud Console
+    const redirectUri = "https://v0-random-friend-app.vercel.app/auth/google/callback"
 
     console.log("Using redirect URI:", redirectUri)
 
