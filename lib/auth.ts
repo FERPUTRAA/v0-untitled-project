@@ -37,7 +37,19 @@ export async function verifyJwt(token: string) {
 // Fungsi untuk login dengan Google
 export async function loginWithGoogle(code: string) {
   try {
+    console.log("Starting Google login process")
+
+    // Tentukan redirect URI
+    const redirectUri =
+      process.env.NEXT_PUBLIC_GOOGLE_REDIRECT_URI ||
+      (process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}/auth/google/callback`
+        : "http://localhost:3000/auth/google/callback")
+
+    console.log("Using redirect URI:", redirectUri)
+
     // Exchange code for tokens
+    console.log("Exchanging code for tokens")
     const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: {
@@ -47,20 +59,31 @@ export async function loginWithGoogle(code: string) {
         code,
         client_id: process.env.GOOGLE_CLIENT_ID || "",
         client_secret: process.env.GOOGLE_CLIENT_SECRET || "",
-        redirect_uri: process.env.NEXT_PUBLIC_GOOGLE_REDIRECT_URI || "",
+        redirect_uri: redirectUri,
         grant_type: "authorization_code",
       }),
     })
 
+    const tokenResponseText = await tokenResponse.text()
+    console.log("Token response status:", tokenResponse.status)
+    console.log("Token response:", tokenResponseText)
+
     if (!tokenResponse.ok) {
-      const errorData = await tokenResponse.json()
-      console.error("Google token exchange error:", errorData)
-      return { error: "Failed to exchange code for tokens" }
+      let errorMessage = "Failed to exchange code for tokens"
+      try {
+        const errorData = JSON.parse(tokenResponseText)
+        errorMessage = errorData.error_description || errorData.error || errorMessage
+      } catch (e) {
+        // Ignore JSON parse error
+      }
+      console.error("Google token exchange error:", errorMessage)
+      return { error: errorMessage }
     }
 
-    const tokenData = await tokenResponse.json()
+    const tokenData = JSON.parse(tokenResponseText)
 
     // Get user info from Google
+    console.log("Getting user info from Google")
     const userInfoResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
       headers: {
         Authorization: `Bearer ${tokenData.access_token}`,
@@ -74,12 +97,15 @@ export async function loginWithGoogle(code: string) {
     }
 
     const userData = await userInfoResponse.json()
+    console.log("Got user info:", userData.email)
 
     // Check if user exists
+    console.log("Checking if user exists")
     let user = await getUserByEmail(userData.email)
 
     if (!user) {
       // Create new user
+      console.log("Creating new user")
       user = await createUser({
         email: userData.email,
         fullName: userData.name,
@@ -87,18 +113,24 @@ export async function loginWithGoogle(code: string) {
         provider: "google",
         googleId: userData.id,
       })
-    } else if (user.provider !== "google") {
+      console.log("New user created with ID:", user.id)
+    } else {
+      console.log("User already exists with ID:", user.id)
       // Update existing user with Google info
-      user = await updateUser(user.id, {
-        googleId: userData.id,
-        avatarUrl: user.avatarUrl || userData.picture,
-      })
+      user =
+        (await updateUser(user.id, {
+          googleId: userData.id,
+          avatarUrl: user.avatarUrl || userData.picture,
+          provider: user.provider || "google",
+        })) || user
     }
 
     // Generate JWT
+    console.log("Generating JWT")
     const token = await generateJwt({ userId: user.id })
 
     // Set cookie
+    console.log("Setting auth cookie")
     cookies().set({
       name: "auth-token",
       value: token,
@@ -109,6 +141,7 @@ export async function loginWithGoogle(code: string) {
       sameSite: "lax",
     })
 
+    console.log("Google login completed successfully")
     return { user }
   } catch (error) {
     console.error("Google login error:", error)

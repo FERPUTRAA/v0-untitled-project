@@ -15,11 +15,6 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { InfoIcon, Shield } from "lucide-react"
 import { loginUser, signupUser, getUser } from "@/actions/auth-actions"
 
-// Fallback values for development
-const DEFAULT_GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID
-const DEFAULT_GOOGLE_REDIRECT_URI =
-  process.env.NEXT_PUBLIC_GOOGLE_REDIRECT_URI || `${window.location.origin}/auth/google/callback`
-
 export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [email, setEmail] = useState("")
@@ -29,10 +24,7 @@ export default function LoginPage() {
   const [signupPassword, setSignupPassword] = useState("")
   const [error, setError] = useState("")
   const [agreedToTerms, setAgreedToTerms] = useState(false)
-  const [googleConfig, setGoogleConfig] = useState({
-    clientId: DEFAULT_GOOGLE_CLIENT_ID,
-    redirectUri: DEFAULT_GOOGLE_REDIRECT_URI,
-  })
+  const [googleRedirectUri, setGoogleRedirectUri] = useState("")
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -56,27 +48,24 @@ export default function LoginPage() {
     }
   }, [searchParams])
 
-  // Fetch config if needed
+  // Fetch config
   useEffect(() => {
-    // Only fetch if we don't have the client ID from env
-    if (!DEFAULT_GOOGLE_CLIENT_ID) {
-      const fetchConfig = async () => {
-        try {
-          const response = await fetch("/api/config")
-          if (response.ok) {
-            const config = await response.json()
-            setGoogleConfig({
-              clientId: config.googleClientId,
-              redirectUri: config.googleRedirectUri,
-            })
-          }
-        } catch (error) {
-          console.error("Failed to fetch config:", error)
-        }
-      }
+    const fetchConfig = async () => {
+      try {
+        const response = await fetch("/api/config")
+        if (response.ok) {
+          const config = await response.json()
+          setGoogleRedirectUri(config.googleRedirectUri)
 
-      fetchConfig()
+          // Log the redirect URI for debugging
+          console.log("Google Redirect URI:", config.googleRedirectUri)
+        }
+      } catch (error) {
+        console.error("Failed to fetch config:", error)
+      }
     }
+
+    fetchConfig()
   }, [])
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -160,18 +149,20 @@ export default function LoginPage() {
       setIsLoading(true)
       setError("")
 
-      if (!googleConfig.clientId) {
-        setError("Google login tidak tersedia saat ini")
-        setIsLoading(false)
-        return
-      }
+      // Gunakan redirect URI dari API config atau fallback ke nilai default
+      const redirectUri = googleRedirectUri || `${window.location.origin}/auth/google/callback`
 
-      console.log("Starting Google login, redirecting to Google auth page")
+      // Log the redirect URI being used
+      console.log("Using Google Redirect URI:", redirectUri)
+
       const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${
-        googleConfig.clientId
+        process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID
       }&redirect_uri=${encodeURIComponent(
-        googleConfig.redirectUri,
+        redirectUri,
       )}&response_type=code&scope=email%20profile&prompt=select_account&access_type=offline`
+
+      // Log the full auth URL
+      console.log("Google Auth URL:", googleAuthUrl)
 
       window.location.href = googleAuthUrl
     } catch (err) {

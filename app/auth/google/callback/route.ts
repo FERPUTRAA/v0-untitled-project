@@ -5,6 +5,16 @@ export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams
     const code = searchParams.get("code")
+    const error = searchParams.get("error")
+
+    // Log untuk debugging
+    console.log("Google Callback - Code:", code ? "Present" : "Missing")
+    console.log("Google Callback - Error:", error || "None")
+
+    if (error) {
+      console.error("Google auth error:", error)
+      return NextResponse.redirect(new URL(`/auth/login?error=${encodeURIComponent(error)}`, request.url))
+    }
 
     if (!code) {
       console.error("Missing authorization code")
@@ -12,19 +22,20 @@ export async function GET(request: NextRequest) {
     }
 
     console.log("Received Google auth code, attempting to exchange for tokens")
-    const { user, error } = await loginWithGoogle(code)
+    const result = await loginWithGoogle(code)
 
-    if (error || !user) {
-      console.error("Google login error:", error)
+    if (result.error || !result.user) {
+      console.error("Google login error:", result.error)
       return NextResponse.redirect(
-        new URL(`/auth/login?error=${encodeURIComponent(error || "Unknown error")}`, request.url),
+        new URL(`/auth/login?error=${encodeURIComponent(result.error || "Unknown error")}`, request.url),
       )
     }
 
     console.log("Google login successful, redirecting to dashboard")
     return NextResponse.redirect(new URL("/dashboard", request.url))
-  } catch (error) {
+  } catch (error: any) {
     console.error("Unexpected error in Google callback:", error)
-    return NextResponse.redirect(new URL("/auth/login?error=server_error", request.url))
+    const errorMessage = error.message || "server_error"
+    return NextResponse.redirect(new URL(`/auth/login?error=${encodeURIComponent(errorMessage)}`, request.url))
   }
 }
